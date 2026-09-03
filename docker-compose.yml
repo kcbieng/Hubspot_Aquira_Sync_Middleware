@@ -31,7 +31,7 @@ services:
     ports:
       - "8080:8080"
     env_file:
-      - .env
+      - stack.env
     environment:
       TZ: America/Chicago
       DATABASE_URL: postgresql://middleware:middleware_password@db:5432/aquira_hubspot
