@@ -1,5 +1,3 @@
-version: '3.9'
-
 services:
   db:
     image: postgres:16-alpine
@@ -22,7 +20,9 @@ services:
       - app-network
 
   middleware:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: aquira-hubspot-middleware
     depends_on:
       db:
