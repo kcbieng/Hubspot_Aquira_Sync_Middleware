@@ -1,0 +1,19 @@
+version: '3.9'
+
+services:
+  middleware:
+    build: .
+    container_name: aquira-hubspot-middleware
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      - TZ=America/Chicago
+    volumes:
+      - app_data:/app
+      - ./logs:/var/log/aquira
+    restart: unless-stopped
+
+volumes:
+  app_data:

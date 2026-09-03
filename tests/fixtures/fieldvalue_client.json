@@ -1,0 +1,20 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "",
+  "Entity": {
+    "ID": 101,
+    "Version": 7,
+    "Name": "ACME Agency",
+    "LongName": "ACME Media Agency",
+    "IsAccount": { "Value": true, "Valid": true, "Access": 1 },
+    "IsAdvertiser": { "Value": false, "Valid": true, "Access": 1 },
+    "IsCurrent": { "Value": true, "Valid": true, "Access": 1 },
+    "ShortName": { "Value": "ACME", "Valid": true, "Label": "Short", "Access": 2 },
+    "Email": { "Value": "billing@acme.example", "Valid": true, "Access": 2 },
+    "Phone": { "Value": "2145550100", "Valid": true, "Access": 2 },
+    "Website": { "Value": "acme.example", "Valid": true, "Access": 2 },
+    "PhysicalAddress": { "Value": "100 Main St", "Valid": true, "Access": 2 },
+    "Contacts": { "Value": [{ "ID": 1, "Name": "Jane Doe" }], "Valid": true, "Access": 1 }
+  }
+}

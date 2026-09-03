@@ -1,0 +1,22 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "OK",
+  "ErrorText": "",
+  "name": "load",
+  "Entity": {
+    "ID": 101,
+    "Name": "Acme Media",
+    "Version": 4,
+    "Address1": {"Value": "123 Main St", "Valid": true, "Access": 2},
+    "Phone": {"Value": "555-111-2222", "Valid": true, "Access": 2},
+    "Website": {"Value": "https://acmemedia.example", "Valid": true, "Access": 2},
+    "Contacts": [
+      {
+        "ID": 501,
+        "Name": {"Value": "Jane Doe", "Valid": true, "Access": 2},
+        "Email": {"Value": "jane@acmemedia.example", "Valid": true, "Access": 2}
+      }
+    ]
+  }
+}

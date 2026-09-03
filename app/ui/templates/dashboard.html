@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Dashboard</h2>
+  <p><strong>Mode:</strong> {{ mode_label }}</p>
+  <p><strong>Environment:</strong> {{ settings.environment }}</p>
+  <p><strong>Timezone:</strong> {{ settings.timezone }}</p>
+  <p><strong>Status:</strong> {{ status }}</p>
+  <ul>
+    <li>Aquira: {{ settings.aquira_base_url }}</li>
+    <li>HubSpot token: {{ 'configured' if settings.hubspot_access_token else 'missing' }}</li>
+    <li>What-if: {{ settings.whatif }}</li>
+  </ul>
+{% endblock %}

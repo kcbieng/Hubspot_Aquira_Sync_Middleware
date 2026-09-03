@@ -1,0 +1,18 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "OK",
+  "ErrorText": "",
+  "name": "contract_load",
+  "Entity": {
+    "ID": 2501,
+    "Name": "Spring Campaign",
+    "Version": 21,
+    "ContractCD": "CTR-2501",
+    "IsProposal": true,
+    "IsContract": false,
+    "StartDate": {"Value": "2026-02-01T00:00:00Z", "Valid": true, "Access": 2},
+    "EndDate": {"Value": "2026-03-31T00:00:00Z", "Valid": true, "Access": 2},
+    "TotalValue": {"Value": 9000, "Valid": true, "Access": 2}
+  }
+}

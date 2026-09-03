@@ -1,0 +1,16 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "OK",
+  "ErrorText": "",
+  "name": "search",
+  "Data": [
+    {
+      "ID": 101,
+      "Name": "Acme Media",
+      "Version": 1,
+      "IsAccount": true,
+      "IsAdvertiser": false
+    }
+  ]
+}

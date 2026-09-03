@@ -1,0 +1,12 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "",
+  "Entity": {
+    "ID": 202,
+    "Version": 4,
+    "Name": "Morning Show",
+    "IsAccount": { "Value": false, "Valid": true, "Access": 1 },
+    "IsAdvertiser": { "Value": true, "Valid": true, "Access": 1 }
+  }
+}

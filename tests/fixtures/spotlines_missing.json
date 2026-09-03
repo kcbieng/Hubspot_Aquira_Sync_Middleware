@@ -1,0 +1,9 @@
+{
+  "contract_id": 9003,
+  "contract_cd": "C-9003",
+  "kind": "proposal",
+  "fallback_start": "2026-01-15",
+  "fallback_end": "2026-03-15",
+  "fallback_amount": 12000,
+  "lines": []
+}

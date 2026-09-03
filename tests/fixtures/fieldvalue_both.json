@@ -1,0 +1,12 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "",
+  "Entity": {
+    "ID": 303,
+    "Version": 11,
+    "Name": "Self Represented",
+    "IsAccount": { "Value": true, "Valid": true, "Access": 1 },
+    "IsAdvertiser": { "Value": true, "Valid": true, "Access": 1 }
+  }
+}

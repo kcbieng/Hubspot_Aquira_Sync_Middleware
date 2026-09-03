@@ -1,0 +1,19 @@
+{
+  "contract_id": 9002,
+  "contract_cd": "C-9002",
+  "kind": "booked",
+  "fallback_start": "2026-01-01",
+  "fallback_end": "2026-02-28",
+  "fallback_amount": 1000,
+  "lines": [
+    {
+      "station_id": 10,
+      "station": "KCBI",
+      "start": "2026-01-01",
+      "end": "2026-02-28",
+      "amount": 1000,
+      "spots_by_month": {"2026-01": 30, "2026-02": 10},
+      "seconds_by_month": {}
+    }
+  ]
+}

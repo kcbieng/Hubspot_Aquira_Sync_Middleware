@@ -1,0 +1,15 @@
+{
+  "Success": true,
+  "Error": 0,
+  "ErrorName": "",
+  "Entity": {
+    "ID": 9001,
+    "Version": 3,
+    "Name": "9001",
+    "ContractCD": { "Value": "C-9001", "Access": 1 },
+    "IsProposal": { "Value": false, "Valid": true, "Access": 1 },
+    "IsContract": { "Value": true, "Valid": true, "Access": 1 },
+    "Status": { "Value": 2, "Valid": true, "Access": 1 },
+    "Advertiser": { "Value": { "ID": 202, "Name": "Morning Show" }, "Valid": true, "Access": 1 }
+  }
+}
