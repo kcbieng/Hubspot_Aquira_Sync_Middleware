@@ -1,19 +1,58 @@
 version: '3.9'
 
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: aquira-hubspot-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: aquira_hubspot
+      POSTGRES_USER: middleware
+      POSTGRES_PASSWORD: middleware_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U middleware -d aquira_hubspot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
   middleware:
     build: .
     container_name: aquira-hubspot-middleware
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
     ports:
       - "8080:8080"
     env_file:
       - .env
     environment:
-      - TZ=America/Chicago
+      TZ: America/Chicago
+      DATABASE_URL: postgresql://middleware:middleware_password@db:5432/aquira_hubspot
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:-admin}
     volumes:
       - app_data:/app
       - ./logs:/var/log/aquira
-    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - app-network
 
 volumes:
   app_data:
+  postgres_data:
+
+networks:
+  app-network:
+    driver: bridge
