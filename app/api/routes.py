@@ -253,26 +253,31 @@ def aquira_owners() -> list[dict[str, object]]:
 
 
 @router.get("/owners/hubspot")
-def hubspot_owners() -> list[dict[str, str]]:
+def hubspot_owners() -> list[dict[str, object]]:
     client = HubSpotClient()
     try:
+        lister = getattr(client, "list_sales_users", None)
+        if callable(lister):
+            return lister()
         payload = client.get_owners()
     except Exception:
-        payload = {"results": []}
-    results = []
+        return []
+    rows: list[dict[str, object]] = []
     for owner in payload.get("results", []):
-        results.append(
+        first = owner.get("firstName") or ""
+        last = owner.get("lastName") or ""
+        name = f"{first} {last}".strip() or owner.get("name") or owner.get("email") or ""
+        rows.append(
             {
                 "owner_id": str(owner.get("id") or owner.get("ownerId") or ""),
-                "name": (
-                    owner.get("firstName") + " " + owner.get("lastName")
-                    if owner.get("firstName") or owner.get("lastName")
-                    else owner.get("name")
-                ),
-                "email": owner.get("email"),
+                "name": name,
+                "email": owner.get("email") or "",
+                "kind": "user",
+                "role": "",
+                "super_admin": False,
             }
         )
-    return results
+    return rows
 
 
 @router.get("/owners/map")

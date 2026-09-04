@@ -3,10 +3,16 @@
   <div class="panel-card p-4 p-md-5 mb-4">
     <div class="page-header">
       <div>
-        <div class="text-uppercase small text-primary fw-bold mb-1">Ownership</div>
-        <h2 class="mb-0">Owner mapping</h2>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Sales assignment</div>
+        <h2 class="mb-0">Sales rep mapping</h2>
       </div>
     </div>
+    <p class="text-muted">
+      Aquira <strong>sales reps</strong> are assigned to HubSpot <strong>users</strong> (the deal&rsquo;s
+      <code>hubspot_owner_id</code>). HubSpot&rsquo;s Owner list is anyone who can own a CRM record —
+      in a small portal that is often just Super Admins. Super Admins stay in the dropdown so you can
+      pick one by hand, but Suggest will not map a sales rep onto a portal admin unless the emails match.
+    </p>
 
     <form method="post" action="/ui/owners">
       <div class="d-flex gap-2 mb-3">
@@ -18,7 +24,7 @@
           <thead>
             <tr>
               <th>Aquira sales rep</th>
-              <th>HubSpot owner</th>
+              <th>HubSpot user</th>
               <th>Enabled</th>
             </tr>
           </thead>
@@ -33,10 +39,12 @@
                 </td>
                 <td>
                   <select class="form-select" name="hubspot_owner_id_{{ row.aquira_user_id }}">
-                    <option value="">Unmapped</option>
+                    <option value="">Unmapped — keep Aquira rep on the deal, do not set HubSpot owner</option>
                     {% for owner in hubspot_owners %}
                       <option value="{{ owner.owner_id }}" {% if owner.owner_id == row.hubspot_owner_id %}selected{% endif %}>
-                        {{ owner.name }} — {{ owner.email }}
+                        {{ owner.name }}{% if owner.role %} · {{ owner.role }}{% endif %}
+                        {% if owner.kind == 'admin' %} (portal admin){% elif owner.kind == 'sales' %} (sales){% endif %}
+                        — {{ owner.email }}
                       </option>
                     {% endfor %}
                   </select>

@@ -10,7 +10,7 @@ The scheduler honors what-if mode. Live writes only happen when you turn what-if
 - Reads HubSpot identity fields (name, phone, email, address, website) and sparse-writes them back to Aquira clients and contacts
 - Optionally creates an Aquira client for a HubSpot company that has no `aquira_id`
 - Allocates contract dollars across calendar months (spot-weighted when line data exists, even fallback otherwise)
-- Maps Aquira sales reps to HubSpot owners
+- Maps Aquira sales reps to HubSpot **users** (deal `hubspot_owner_id`). HubSpot's Owner picker is anyone who can own a record and is often just Super Admins — those are labeled and excluded from auto-suggest.
 - Accepts HubSpot CRM webhooks and runs a targeted identity writeback
 - Records every plan item and field diff so operators can inspect a what-if before enabling writes
 

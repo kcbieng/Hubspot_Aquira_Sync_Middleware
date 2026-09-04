@@ -2,9 +2,37 @@ from __future__ import annotations
 
 from typing import Any
 
+ADMIN_ROLE_MARKERS = ("super admin", "superadmin", "app marketplace admin")
+SALES_ROLE_MARKERS = (
+    "sales",
+    "account executive",
+    "account manager",
+    "advertis",
+    "seller",
+    "ae ",
+    "rep",
+)
+
 
 def _normalize_name(value: Any) -> str:
     return " ".join((value or "").strip().lower().replace("-", " ").split())
+
+
+def classify_hubspot_user(role_name: str | None = None, super_admin: bool = False) -> str:
+    if super_admin:
+        return "admin"
+    label = (role_name or "").strip().lower()
+    if any(marker in label for marker in ADMIN_ROLE_MARKERS):
+        return "admin"
+    if any(marker in label for marker in SALES_ROLE_MARKERS):
+        return "sales"
+    return "user"
+
+
+def _is_admin(person: dict[str, Any]) -> bool:
+    if person.get("super_admin") is True:
+        return True
+    return (person.get("kind") or "") == "admin"
 
 
 def _name_similarity(left: str, right: str) -> float:
@@ -30,10 +58,19 @@ def _name_similarity(left: str, right: str) -> float:
 
 
 def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map Aquira sales reps to HubSpot users.
+
+    HubSpot "Owner" is the CRM record-owner slot. In small portals that list is
+    mostly Super Admins. Auto-suggest therefore prefers sales/non-admin users
+    and only maps a Super Admin on an exact email match (same person).
+    """
     suggestions: list[dict[str, Any]] = []
-    owner_lookup_by_email = { (o.get("email") or "").strip().lower(): o for o in hubspot_owners if (o.get("email") or "").strip() }
+    owner_lookup_by_email = {
+        (o.get("email") or "").strip().lower(): o for o in hubspot_owners if (o.get("email") or "").strip()
+    }
+    name_candidates = [o for o in hubspot_owners if not _is_admin(o)]
     owner_lookup_by_name: list[tuple[str, dict[str, Any]]] = []
-    for owner in hubspot_owners:
+    for owner in name_candidates:
         name = (owner.get("name") or "").strip()
         if name:
             owner_lookup_by_name.append((_normalize_name(name), owner))
@@ -58,7 +95,11 @@ def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[di
             elif not chosen:
                 last = aquira_name.split()[-1] if aquira_name.split() else ""
                 if last:
-                    last_matches = [owner for normalized_name, owner in owner_lookup_by_name if normalized_name.split() and normalized_name.split()[-1] == last]
+                    last_matches = [
+                        owner
+                        for normalized_name, owner in owner_lookup_by_name
+                        if normalized_name.split() and normalized_name.split()[-1] == last
+                    ]
                     if len(last_matches) == 1:
                         chosen = last_matches[0]
 
@@ -70,6 +111,8 @@ def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[di
                 "hubspot_owner_id": (chosen or {}).get("owner_id") if chosen else None,
                 "hubspot_name": (chosen or {}).get("name") if chosen else None,
                 "hubspot_email": (chosen or {}).get("email") if chosen else None,
+                "hubspot_role": (chosen or {}).get("role") if chosen else None,
+                "hubspot_kind": (chosen or {}).get("kind") if chosen else None,
                 "enabled": chosen is not None,
                 "suggested": chosen is not None,
             }

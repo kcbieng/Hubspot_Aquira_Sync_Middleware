@@ -120,6 +120,18 @@ def test_owner_map_does_not_clobber_operator_assignment(monkeypatch):
         def get_owners(self):
             return {"results": [{"ownerId": "hs-1", "email": "jane@acme.example", "name": "Jane Smith"}]}
 
+        def list_sales_users(self):
+            return [
+                {
+                    "owner_id": "hs-1",
+                    "name": "Jane Smith",
+                    "email": "jane@acme.example",
+                    "kind": "sales",
+                    "role": "Sales",
+                    "super_admin": False,
+                }
+            ]
+
     repo = Repo()
     try:
         repo.session.merge(

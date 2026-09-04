@@ -1,5 +1,5 @@
 from app.api.routes import owner_map
-from app.mapping.owners import suggest_owner_map
+from app.mapping.owners import classify_hubspot_user, suggest_owner_map
 
 
 def test_owner_suggest_prefers_email_then_name():
@@ -9,9 +9,9 @@ def test_owner_suggest_prefers_email_then_name():
         {"id": 3, "name": "Casey White", "email": ""},
     ]
     hubspot_owners = [
-        {"owner_id": "hs-1", "name": "Jane Smith", "email": "jane@acme.example"},
-        {"owner_id": "hs-2", "name": "Bobby Jones", "email": "bobby@other.example"},
-        {"owner_id": "hs-3", "name": "Casey White", "email": "casey@fresh.example"},
+        {"owner_id": "hs-1", "name": "Jane Smith", "email": "jane@acme.example", "kind": "sales"},
+        {"owner_id": "hs-2", "name": "Bobby Jones", "email": "bobby@other.example", "kind": "sales"},
+        {"owner_id": "hs-3", "name": "Casey White", "email": "casey@fresh.example", "kind": "user"},
     ]
 
     suggestions = suggest_owner_map(aquira_reps, hubspot_owners)
@@ -19,6 +19,35 @@ def test_owner_suggest_prefers_email_then_name():
     assert suggestions[1]["hubspot_owner_id"] == "hs-2"
     assert suggestions[2]["hubspot_owner_id"] == "hs-3"
     assert suggestions[0]["suggested"] is True
+
+
+def test_owner_suggest_does_not_map_name_onto_super_admin():
+    suggestions = suggest_owner_map(
+        [{"id": 4, "name": "Pat Admin", "email": ""}],
+        [
+            {"owner_id": "hs-admin", "name": "Pat Admin", "email": "admin@kcbi.org", "kind": "admin", "super_admin": True, "role": "Super Admin"},
+            {"owner_id": "hs-sales", "name": "Pat Sales", "email": "pat@kcbi.org", "kind": "sales", "role": "Sales"},
+        ],
+    )
+    assert suggestions[0]["hubspot_owner_id"] is None
+    assert suggestions[0]["enabled"] is False
+
+
+def test_owner_suggest_allows_super_admin_only_on_exact_email():
+    suggestions = suggest_owner_map(
+        [{"id": 5, "name": "Pat Admin", "email": "admin@kcbi.org"}],
+        [
+            {"owner_id": "hs-admin", "name": "Pat Admin", "email": "admin@kcbi.org", "kind": "admin", "super_admin": True, "role": "Super Admin"},
+        ],
+    )
+    assert suggestions[0]["hubspot_owner_id"] == "hs-admin"
+
+
+def test_classify_hubspot_user_roles():
+    assert classify_hubspot_user("Super Admin", False) == "admin"
+    assert classify_hubspot_user("Sales Manager", False) == "sales"
+    assert classify_hubspot_user("Marketing", True) == "admin"
+    assert classify_hubspot_user("Coordinator", False) == "user"
 
 
 def test_owner_map_builds_live_aquira_to_hubspot_mapping(monkeypatch):
@@ -40,6 +69,12 @@ def test_owner_map_builds_live_aquira_to_hubspot_mapping(monkeypatch):
                     {"ownerId": "hs-2", "email": "bobby@other.example", "name": "Bobby Jones"},
                 ]
             }
+
+        def list_sales_users(self):
+            return [
+                {"owner_id": "hs-1", "name": "Jane Smith", "email": "jane@acme.example", "kind": "sales", "role": "Sales"},
+                {"owner_id": "hs-2", "name": "Bobby Jones", "email": "bobby@other.example", "kind": "sales", "role": "Sales"},
+            ]
 
     monkeypatch.setattr("app.api.routes.AquiraSessionClient", FakeAquira)
     monkeypatch.setattr("app.api.routes.HubSpotClient", FakeHubSpot)

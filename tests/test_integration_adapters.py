@@ -36,3 +36,30 @@ def test_hubspot_owner_map_uses_email_lookup():
 
     assert owner_map["jane@example.com"] == "hs-1"
     assert owner_map["bob@example.com"] == "hs-2"
+
+
+def test_list_sales_users_labels_super_admins():
+    client = HubSpotClient(access_token="token")
+    owners = {
+        "results": [
+            {"id": "1", "userId": "10", "email": "admin@kcbi.org", "firstName": "Pat", "lastName": "Admin", "type": "PERSON"},
+            {"id": "2", "userId": "20", "email": "rep@kcbi.org", "firstName": "Sam", "lastName": "Seller", "type": "PERSON"},
+            {"id": "3", "userId": "30", "email": "queue@kcbi.org", "firstName": "Inbox", "type": "QUEUE"},
+        ]
+    }
+    users = [
+        {"id": "10", "email": "admin@kcbi.org", "roleId": "r-admin", "superAdmin": True},
+        {"id": "20", "email": "rep@kcbi.org", "roleId": "r-sales", "superAdmin": False},
+    ]
+    roles = {"results": [{"id": "r-admin", "name": "Super Admin"}, {"id": "r-sales", "name": "Sales"}]}
+
+    with patch.object(client, "get_owners", return_value=owners):
+        with patch.object(client, "get_users", return_value=users):
+            with patch.object(client, "get_user_roles", return_value={"r-admin": "Super Admin", "r-sales": "Sales"}):
+                rows = client.list_sales_users()
+
+    kinds = {row["email"]: row["kind"] for row in rows}
+    assert kinds["admin@kcbi.org"] == "admin"
+    assert kinds["rep@kcbi.org"] == "sales"
+    assert "queue@kcbi.org" not in kinds
+    assert rows[0]["email"] == "rep@kcbi.org"

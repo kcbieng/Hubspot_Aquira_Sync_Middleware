@@ -57,6 +57,7 @@ Enable at least:
 - `crm.objects.contacts.read` / `crm.objects.contacts.write`
 - `crm.objects.deals.read` / `crm.objects.deals.write`
 - `crm.objects.owners.read`
+- `settings.users.read` (optional but recommended — labels Super Admins vs sales roles so mapping does not assign deals to portal admins)
 - `crm.schemas.companies.write` / `crm.schemas.contacts.write` / `crm.schemas.deals.write` (schema bootstrap)
 - Custom objects / schemas if you want `revenue_period` created automatically
 

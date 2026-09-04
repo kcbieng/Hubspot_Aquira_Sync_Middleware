@@ -144,6 +144,35 @@ class HubSpotClient:
                 break
         return {"results": results}
 
+    def get_users(self) -> list[dict[str, Any]]:
+        if not self.access_token:
+            return []
+        results: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": 100}
+            if after:
+                params["after"] = after
+            page = self._request("GET", "/settings/v3/users", params=params)
+            results.extend(page.get("results") or [])
+            after = ((page.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                break
+            if len(results) >= 1000:
+                break
+        return results
+
+    def get_user_roles(self) -> dict[str, str]:
+        if not self.access_token:
+            return {}
+        page = self._request("GET", "/settings/v3/users/roles")
+        roles: dict[str, str] = {}
+        for row in page.get("results") or []:
+            ident = str(row.get("id") or "")
+            if ident:
+                roles[ident] = str(row.get("name") or "")
+        return roles
+
     def get_owner_map(self) -> dict[str, str]:
         payload = self.get_owners()
         owner_map: dict[str, str] = {}
@@ -157,12 +186,82 @@ class HubSpotClient:
     def list_owners(self) -> list[dict[str, str]]:
         owners: list[dict[str, str]] = []
         for owner in self.get_owners().get("results", []):
+            owner_type = str(owner.get("type") or "PERSON").upper()
+            if owner_type and owner_type not in {"PERSON"}:
+                continue
             ident = str(owner.get("id") or owner.get("ownerId") or "")
             if not ident:
                 continue
-            name = f"{owner.get('firstName') or ''} {owner.get('lastName') or ''}".strip() or owner.get("name") or owner.get("email") or ident
-            owners.append({"owner_id": ident, "name": name, "email": owner.get("email") or ""})
+            name = (
+                f"{owner.get('firstName') or ''} {owner.get('lastName') or ''}".strip()
+                or owner.get("name")
+                or owner.get("email")
+                or ident
+            )
+            owners.append(
+                {
+                    "owner_id": ident,
+                    "user_id": str(owner.get("userId") or "") or "",
+                    "name": name,
+                    "email": owner.get("email") or "",
+                }
+            )
         return owners
+
+    def list_sales_users(self) -> list[dict[str, Any]]:
+        """CRM owners joined with portal users so Super Admins can be labeled.
+
+        HubSpot's owner list is anyone who can own a record — often Super Admins.
+        Sales-rep mapping prefers non-admin users. Falls back to unlabeled owners
+        if the token cannot read settings.users.
+        """
+        from app.mapping.owners import classify_hubspot_user
+
+        owners = self.list_owners()
+        users_by_email: dict[str, dict[str, Any]] = {}
+        users_by_id: dict[str, dict[str, Any]] = {}
+        roles: dict[str, str] = {}
+        try:
+            for user in self.get_users():
+                email = str(user.get("email") or "").strip().lower()
+                ident = str(user.get("id") or "")
+                if email:
+                    users_by_email[email] = user
+                if ident:
+                    users_by_id[ident] = user
+            roles = self.get_user_roles()
+        except Exception:
+            users_by_email = {}
+            users_by_id = {}
+            roles = {}
+
+        rows: list[dict[str, Any]] = []
+        for owner in owners:
+            email = str(owner.get("email") or "").strip().lower()
+            user = users_by_email.get(email) or users_by_id.get(str(owner.get("user_id") or ""))
+            super_admin = bool((user or {}).get("superAdmin"))
+            role_name = roles.get(str((user or {}).get("roleId") or ""), "")
+            if not role_name and super_admin:
+                role_name = "Super Admin"
+            kind = classify_hubspot_user(role_name, super_admin)
+            rows.append(
+                {
+                    "owner_id": owner["owner_id"],
+                    "user_id": owner.get("user_id") or "",
+                    "name": owner.get("name") or "",
+                    "email": owner.get("email") or "",
+                    "role": role_name,
+                    "kind": kind,
+                    "super_admin": super_admin,
+                }
+            )
+        rows.sort(
+            key=lambda row: (
+                0 if row["kind"] == "sales" else 1 if row["kind"] == "user" else 2,
+                str(row.get("name") or "").lower(),
+            )
+        )
+        return rows
 
     def get_properties(self, object_type: str) -> dict[str, Any]:
         response = httpx.get(
