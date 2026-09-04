@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-split-sprocket-mark"
+REVISION = "2026.09.04-q-tail-mark"
