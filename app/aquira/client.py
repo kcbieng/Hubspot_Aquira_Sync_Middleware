@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from app.aquira.normalize import (
     list_from_envelope,
+    merge_contract,
     normalize_client,
     normalize_contact,
     normalize_contract,
@@ -14,6 +16,8 @@ from app.aquira.normalize import (
     unwrap_deep,
 )
 from app.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 SESSION_ERROR_NAMES = {
     "sessionexpired",
@@ -201,25 +205,35 @@ class AquiraSessionClient:
 
     def search_contracts(self, search_term: str = "") -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
-        search = self.try_request("POST", "/Contract/Search", json={"SearchTerm": search_term, "CurrentOnly": True})
+        search = self.try_request(
+            "POST",
+            "/Contract/Search",
+            json={"SearchTerm": search_term or "", "IncludeActive": True, "IncludeInactive": False},
+        )
         if search:
             payloads.append(search)
         if not search or not list_from_envelope(search):
             for method, path, body in (
+                ("POST", "/Contract/Search", {"SearchTerm": search_term or "", "IncludeActive": True, "IncludeInactive": True}),
                 ("POST", "/Contract/AdvancedSearch", {"SearchTerm": search_term, "CurrentOnly": True}),
                 ("GET", "/Contract/Get", None),
                 ("POST", "/Contract/Lookup", {"SearchTerm": search_term}),
             ):
                 payload = self.try_request(method, path, json=body) if body is not None else self.try_request(method, path)
-                if payload:
+                if payload and list_from_envelope(payload):
                     payloads.append(payload)
-        by_id: dict[int, dict[str, Any]] = {}
+                    break
+        if search_term and str(search_term).isdigit():
+            by_id = self.try_request("POST", "/Contract/SearchByID", json={"ID": int(search_term)})
+            if by_id:
+                payloads.append(by_id)
+        by_id_map: dict[int, dict[str, Any]] = {}
         for payload in payloads:
             for row in list_from_envelope(payload):
                 contract = normalize_contract(row)
                 if contract:
-                    by_id[int(contract["ID"])] = contract
-        return list(by_id.values())
+                    by_id_map[int(contract["ID"])] = contract
+        return list(by_id_map.values())
 
     def load_spot_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         from_load = normalize_spot_lines(loaded) if loaded else []
@@ -303,9 +317,13 @@ class AquiraSessionClient:
         loaded_contracts: list[dict[str, Any]] = []
         for contract in contracts:
             try:
-                loaded_contracts.append(self.load_contract(contract["ID"]) or contract)
-            except Exception:
-                loaded_contracts.append(contract)
+                loaded = self.load_contract(contract["ID"])
+            except Exception as exc:
+                logger.warning("Contract/Load/%s failed: %s", contract.get("ID"), exc)
+                loaded = None
+            merged = merge_contract(contract, loaded)
+            if merged:
+                loaded_contracts.append(merged)
         reps = self.load_sales_reps()
         return {"clients": loaded_clients, "contacts": contacts, "contracts": loaded_contracts, "reps": reps}
 
