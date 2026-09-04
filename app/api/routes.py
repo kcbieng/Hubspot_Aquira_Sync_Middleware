@@ -7,6 +7,7 @@ from app.hubspot.client import HubSpotClient
 from app.mapping.owners import suggest_owner_map
 from app.settings import get_settings
 from app.aquira.client import AquiraSessionClient
+from app.sync.orchestrator import SyncContext, SyncOrchestrator
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -55,7 +56,7 @@ def get_settings_stub() -> dict[str, object]:
     }
 
 
-@router.post("/settings/test/aquira")
+@router.api_route("/settings/test/aquira", methods=["GET", "POST"])
 def test_aquira_settings() -> dict[str, object]:
     settings = get_settings()
     return {
@@ -65,7 +66,7 @@ def test_aquira_settings() -> dict[str, object]:
     }
 
 
-@router.post("/settings/test/hubspot")
+@router.api_route("/settings/test/hubspot", methods=["GET", "POST"])
 def test_hubspot_settings() -> dict[str, object]:
     settings = get_settings()
     return {
@@ -108,25 +109,25 @@ def sync_status_stub() -> dict[str, object]:
 
 @router.post("/sync/run")
 def run_sync(payload: dict[str, object] | None = None) -> dict[str, object]:
-    repo = Repo()
     settings = get_settings()
     whatif = bool((payload or {}).get("whatif", settings.whatif))
     settings.whatif = whatif
+
     entities = payload.get("entities") if payload else None
     if entities is None:
         entities = ["companies", "contacts", "deals"]
-    run = repo.add_run("manual", whatif, status="running")
-    for entity in entities:
-        repo.add_run_item(run.id, str(entity), aquira_id=None, hubspot_id=None, action="planned", diff_json={"entity": entity, "whatif": whatif, "mode": "planned"})
-    run.status = "success"
-    run.finished_at = __import__("datetime").datetime.utcnow()
-    repo.session.commit()
+    entity_list = [str(entity) for entity in entities]
+
+    result = SyncOrchestrator().run(
+        SyncContext(trigger="manual", whatif=whatif, entities=entity_list),
+        repo=Repo(),
+    )
     return {
-        "status": "success",
+        "status": result["status"],
         "trigger": "manual",
         "whatif": whatif,
-        "entities": list(entities),
-        "run_id": run.id,
+        "entities": entity_list,
+        "run_id": result["run_id"],
     }
 
 

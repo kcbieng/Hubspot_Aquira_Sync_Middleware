@@ -4,6 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from app.aquira.client import AquiraSessionClient
+from app.db.models import OwnerMap
+from app.db.repo import Repo
+from app.hubspot.client import HubSpotClient
 from app.sync.whatif import SyncInProgress
 
 
@@ -57,6 +61,44 @@ class SyncOrchestrator:
             return context.entities
         return list(self.DEFAULT_ENTITIES)
 
+    def _owner_map_for_sync(self) -> dict[str, str]:
+        repo = Repo()
+        rows = repo.session.query(OwnerMap).filter(OwnerMap.enabled.is_(True)).all()
+        return {str(row.aquira_user_id): str(row.hubspot_owner_id) for row in rows if row.hubspot_owner_id}
+
+    def _entity_payload(self, entity: str) -> tuple[str, list[dict[str, Any]]]:
+        if entity == "companies":
+            try:
+                client = AquiraSessionClient()
+                data = client.load_sales_reps()
+                client.close()
+                return "aquira", data[:10]
+            except Exception:
+                return "aquira", []
+
+        if entity == "contacts":
+            try:
+                client = HubSpotClient()
+                payload = client.get_owners()
+                items = payload.get("results", [])
+                return "hubspot", items[:10]
+            except Exception:
+                return "hubspot", []
+
+        if entity == "deals":
+            try:
+                client = HubSpotClient()
+                payload = client.get_owners()
+                items = payload.get("results", [])
+                owner_map = self._owner_map_for_sync()
+                for item in items:
+                    item["owner_map_applied"] = owner_map.get(str(item.get("ownerId")), item.get("ownerId"))
+                return "hubspot", items[:10]
+            except Exception:
+                return "hubspot", []
+
+        return "local", []
+
     def run(self, context: SyncContext, repo: Any | None = None) -> dict[str, Any]:
         self.acquire_lock()
         repo = repo or _NoopRepo()
@@ -66,7 +108,16 @@ class SyncOrchestrator:
         repo.add_event("sync", "INFO", "sync started", {"trigger": context.trigger, "whatif": context.whatif, "entities": entities})
         try:
             for entity in entities:
-                repo.add_run_item(run.id, entity, aquira_id=None, hubspot_id=None, action="planned", diff_json={"entity": entity, "whatif": context.whatif, "mode": "planned"})
+                source, rows = self._entity_payload(entity)
+                action = "planned" if context.whatif else "applied"
+                diff_json = {
+                    "entity": entity,
+                    "source": source,
+                    "whatif": context.whatif,
+                    "mode": "planned" if context.whatif else "live",
+                    "items": rows,
+                }
+                repo.add_run_item(run.id, entity, aquira_id=None, hubspot_id=None, action=action, diff_json=diff_json)
             repo.add_event("sync", "INFO", "sync completed", {"trigger": context.trigger, "whatif": context.whatif, "entities": entities})
             if hasattr(run, "status"):
                 run.status = "success"

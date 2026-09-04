@@ -1,10 +1,54 @@
 from __future__ import annotations
 
+import base64
 import os
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _fernet_key_bytes(key: str | None) -> bytes:
+    raw = (key or "dev-change-me").strip()
+    if not raw:
+        raw = "dev-change-me"
+    if len(raw) >= 32:
+        padded = raw[:32]
+    else:
+        padded = raw.ljust(32, "0")
+    return base64.urlsafe_b64encode(padded.encode("utf-8"))
+
+
+def encrypt_secret(value: str | None, key: str | None = None) -> str:
+    if value in (None, ""):
+        return ""
+    try:
+        from cryptography.fernet import Fernet
+
+        fernet = Fernet(_fernet_key_bytes(key))
+        return fernet.encrypt(value.encode("utf-8")).decode("utf-8")
+    except Exception:
+        encoded = base64.urlsafe_b64encode(value.encode("utf-8")).decode("utf-8")
+        return f"enc:{encoded}"
+
+
+def decrypt_secret(value: str | None, key: str | None = None) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        from cryptography.fernet import Fernet
+
+        if value.startswith("enc:"):
+            return base64.urlsafe_b64decode(value[4:]).decode("utf-8")
+        fernet = Fernet(_fernet_key_bytes(key))
+        return fernet.decrypt(value.encode("utf-8")).decode("utf-8")
+    except Exception:
+        if value.startswith("enc:"):
+            try:
+                return base64.urlsafe_b64decode(value[4:]).decode("utf-8")
+            except Exception:
+                return value
+        return value
 
 
 class Settings(BaseSettings):

@@ -1,5 +1,6 @@
 from app.api.routes import owner_map
-from app.mapping.owners import suggest_owner_map
+from app.db.models import OwnerMap
+from app.mapping.owners import resolve_owner_id, suggest_owner_map
 
 
 def test_owner_suggest_prefers_email_then_name():
@@ -49,3 +50,16 @@ def test_owner_map_builds_live_aquira_to_hubspot_mapping(monkeypatch):
     assert mapping[0]["hubspot_owner_id"] == "hs-1"
     assert mapping[0]["enabled"] is True
     assert mapping[1]["hubspot_owner_id"] == "hs-2"
+
+
+def test_resolve_owner_id_uses_only_enabled_owner_map_rows():
+    rows = [
+        OwnerMap(aquira_user_id="44", aquira_name="Jordan Reyes", enabled=True, hubspot_owner_id="owner-enabled"),
+        OwnerMap(aquira_user_id="44", aquira_name="Jordan Reyes", enabled=False, hubspot_owner_id="owner-disabled"),
+        OwnerMap(aquira_user_id="99", aquira_name="Other Rep", enabled=True, hubspot_owner_id="owner-other"),
+    ]
+    sales_reps = [{"SalesRepID": {"ID": 44, "Name": "Jordan Reyes"}}]
+
+    assert resolve_owner_id(sales_reps, rows) == "owner-enabled"
+    assert resolve_owner_id([{"SalesRepID": {"ID": 99, "Name": "Other Rep"}}], rows) == "owner-other"
+    assert resolve_owner_id([{"SalesRepID": {"ID": 7, "Name": "Nobody"}}], rows) is None

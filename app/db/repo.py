@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.db.models import AppSetting, DeadLetter, JobEvent, SyncCursor, SyncRun, SyncRunItem
+from app.settings import decrypt_secret, encrypt_secret, get_settings
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:
@@ -27,13 +28,15 @@ class Repo:
         row = self.session.execute(select(AppSetting).where(AppSetting.key == key)).scalar_one_or_none()
         if row is None:
             row = AppSetting(key=key)
-        row.value_enc = value
+        row.value_enc = encrypt_secret(value, get_settings().settings_fernet_key)
         self.session.add(row)
         self.session.commit()
 
     def get_setting(self, key: str) -> str | None:
         row = self.session.execute(select(AppSetting).where(AppSetting.key == key)).scalar_one_or_none()
-        return row.value_enc if row else None
+        if row is None or row.value_enc in (None, ""):
+            return None
+        return decrypt_secret(row.value_enc, get_settings().settings_fernet_key)
 
     def set_cursor(self, job: str, last_started: str | datetime | None = None, last_finished: str | datetime | None = None, last_error: str | None = None, last_success_at: str | datetime | None = None) -> SyncCursor:
         row = self.session.execute(select(SyncCursor).where(SyncCursor.job == job)).scalar_one_or_none()
@@ -80,6 +83,50 @@ class Repo:
         self.session.commit()
         self.session.refresh(run)
         return run
+
+    def add_revenue_period(self, period: dict[str, Any]) -> None:
+        from app.db.models import RevenuePeriod
+
+        aquira_id = str(period.get("aquira_id"))
+        row = self.session.execute(select(RevenuePeriod).where(RevenuePeriod.aquira_id == aquira_id)).scalar_one_or_none()
+        if row is None:
+            row = RevenuePeriod(aquira_id=aquira_id)
+        row.contract_id = int(period.get("contract_id") or row.contract_id or 0)
+        row.period = str(period.get("period") or row.period)
+        row.amount = float(period.get("amount") or row.amount or 0)
+        row.station = str(period.get("station") or row.station or "ALL")
+        row.station_id = int(period.get("station_id") or row.station_id or 0)
+        row.kind = str(period.get("kind") or row.kind or "booked")
+        row.contract_cd = period.get("contract_cd") or row.contract_cd
+        row.updated_at = datetime.utcnow()
+        self.session.add(row)
+        self.session.commit()
+
+    def get_revenue_periods_for_contract(self, contract_id: int | str) -> list[dict[str, Any]]:
+        from app.db.models import RevenuePeriod
+
+        rows = self.session.execute(
+            select(RevenuePeriod).where(RevenuePeriod.contract_id == int(contract_id)).order_by(RevenuePeriod.period.asc())
+        ).scalars().all()
+        return [{
+            "aquira_id": row.aquira_id,
+            "period": row.period,
+            "amount": row.amount,
+            "station": row.station,
+            "station_id": row.station_id,
+            "kind": row.kind,
+            "contract_id": row.contract_id,
+            "contract_cd": row.contract_cd,
+        } for row in rows]
+
+    def delete_stale_revenue_periods(self, contract_id: int | str, keep_ids: set[str]) -> None:
+        from app.db.models import RevenuePeriod
+
+        rows = self.session.execute(select(RevenuePeriod).where(RevenuePeriod.contract_id == int(contract_id))).scalars().all()
+        for row in rows:
+            if row.aquira_id not in keep_ids:
+                self.session.delete(row)
+        self.session.commit()
 
     def add_run_item(self, run_id: int, entity_type: str, aquira_id: str | int | None, hubspot_id: str | None, action: str, diff_json: Any | None = None, error: str | None = None) -> SyncRunItem:
         item = SyncRunItem(

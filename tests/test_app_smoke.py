@@ -79,7 +79,9 @@ def test_dashboard_shows_recent_sync_output():
 
     assert "Last sync output" in html
     assert "companies" in html.lower()
-    assert "planned" in html.lower()
+    lower_html = html.lower()
+    assert "planned" in lower_html or "applied" in lower_html
+    assert "what-if" in lower_html or "live" in lower_html
 
 
 def test_api_sync_run_records_status_and_history():
@@ -100,6 +102,16 @@ def test_api_sync_run_records_status_and_history():
     history_response = client.get("/api/sync/runs")
     assert history_response.status_code == 200
     assert len(history_response.json()) >= 1
+
+
+def test_settings_validation_endpoints_accept_browser_gets():
+    aquira_response = client.get("/api/settings/test/aquira")
+    hubspot_response = client.get("/api/settings/test/hubspot")
+
+    assert aquira_response.status_code == 200
+    assert hubspot_response.status_code == 200
+    assert aquira_response.json()["status"] in {"ok", "error"}
+    assert hubspot_response.json()["status"] in {"ok", "error"}
 
 
 def test_required_operator_pages_and_api_surfaces_exist():

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.db.models import OwnerMap
+from app.db.repo import Repo
+
 
 def _normalize_name(value: Any) -> str:
     return " ".join((value or "").strip().lower().replace("-", " ").split())
@@ -69,3 +72,24 @@ def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[di
             }
         )
     return suggestions
+
+
+def resolve_owner_id(sales_rep_rows: list[dict[str, Any]], owner_rows: list[OwnerMap]) -> str | None:
+    repo = Repo()
+    if not owner_rows:
+        owner_rows = repo.session.query(OwnerMap).filter(OwnerMap.enabled.is_(True)).all()
+
+    for row in sales_rep_rows:
+        sales_rep = row.get("SalesRepID") if isinstance(row, dict) else row
+        aquira_id = sales_rep.get("ID") if isinstance(sales_rep, dict) else None
+        aquira_name = sales_rep.get("Name") if isinstance(sales_rep, dict) else None
+        if aquira_id is None and isinstance(row, dict):
+            aquira_id = row.get("id")
+        for owner_row in owner_rows:
+            if owner_row.enabled is not True:
+                continue
+            if str(owner_row.aquira_user_id) == str(aquira_id):
+                return owner_row.hubspot_owner_id
+            if aquira_name and owner_row.aquira_name and owner_row.aquira_name.strip().lower() == aquira_name.strip().lower():
+                return owner_row.hubspot_owner_id
+    return None

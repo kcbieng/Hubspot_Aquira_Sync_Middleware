@@ -77,6 +77,21 @@ class OwnerMap(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class RevenuePeriod(Base):
+    __tablename__ = "revenue_period"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    contract_id: Mapped[int] = mapped_column(Integer)
+    aquira_id: Mapped[str] = mapped_column(String(100), unique=True)
+    period: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[float] = mapped_column(Integer)
+    station: Mapped[str] = mapped_column(String(100), default="ALL")
+    station_id: Mapped[int] = mapped_column(Integer, default=0)
+    kind: Mapped[str] = mapped_column(String(20), default="booked")
+    contract_cd: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SyncRun(Base):
     __tablename__ = "sync_run"
 

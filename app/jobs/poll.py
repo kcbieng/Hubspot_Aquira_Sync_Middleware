@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from app.db.repo import Repo
+from app.settings import get_settings
+from app.sync.orchestrator import SyncContext, SyncOrchestrator
+
 
 class PollJob:
     def __init__(self, scheduler: Any | None = None):
@@ -19,5 +23,17 @@ class PollJob:
                 id="sync_poll",
             )
 
-    def run(self) -> dict[str, str]:
-        return {"status": "ok", "message": "poll cycle running", "timestamp": datetime.utcnow().isoformat()}
+    def run(self) -> dict[str, Any]:
+        settings = get_settings()
+        result = SyncOrchestrator().run(
+            SyncContext(trigger="scheduled", whatif=settings.whatif, entities=["companies", "contacts", "deals"]),
+            repo=Repo(),
+        )
+        return {
+            "status": result["status"],
+            "message": "poll cycle running",
+            "whatif": result["whatif"],
+            "entities": result["entities"],
+            "timestamp": datetime.utcnow().isoformat(),
+            "run_id": result["run_id"],
+        }

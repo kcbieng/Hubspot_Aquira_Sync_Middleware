@@ -8,6 +8,9 @@ from typing import Any
 import httpx
 
 from app.aquira.contracts import normalize_spotlines
+from app.db.models import OwnerMap
+from app.db.repo import Repo
+from app.mapping.owners import resolve_owner_id
 from app.mapping.revenue import allocate_revenue
 from app.settings import get_settings
 
@@ -176,6 +179,10 @@ class HubSpotClient:
         contract_cd = _unwrap(entity.get("ContractCD")) or _unwrap(entity.get("Name")) or ""
         is_proposal = bool(_unwrap(entity.get("IsProposal")) is True)
         is_contract = bool(_unwrap(entity.get("IsContract")) is True)
+        sales_reps = entity.get("SalesReps", {}).get("Value", []) if isinstance(entity.get("SalesReps"), dict) else []
+        repo = Repo()
+        owner_rows = repo.session.query(OwnerMap).filter(OwnerMap.enabled.is_(True)).all()
+        resolved_owner = owner_id or resolve_owner_id(sales_reps, owner_rows)
         name = f"{contract_cd} — {_unwrap(entity.get('Name')) or 'Contract'}"
         properties = {
             "dealname": name,
@@ -193,7 +200,7 @@ class HubSpotClient:
             "aquira_end_date": _unwrap(entity.get("EndDate")) or "",
             "aquira_account_id": _unwrap(entity.get("AccountID")) or account_company_id,
             "aquira_advertiser_id": _unwrap(entity.get("AdvertiserID")) or advertiser_company_id,
-            "hubspot_owner_id": owner_id or "",
+            "hubspot_owner_id": resolved_owner or "",
         }
         return {"properties": {k: v for k, v in properties.items() if v not in (None, "", 0.0, 0)}}
 
@@ -210,11 +217,32 @@ class HubSpotClient:
                 "station_id": period["station_id"],
                 "kind": period["kind"],
                 "contract_cd": period["contract_cd"],
+                "contract_id": period["contract_id"],
                 "deal_id": deal_id or "",
                 "company_ids": ";".join(company_ids or []),
             }
             payloads.append({"properties": {k: v for k, v in properties.items() if v not in (None, "", 0, 0.0)}})
         return payloads
+
+    def save_revenue_periods(self, contract: dict[str, Any], raw_detail: dict[str, Any] | None = None, deal_id: str | None = None, company_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        repo = Repo()
+        normalized = normalize_spotlines(contract, raw_detail)
+        periods = allocate_revenue(normalized)
+        current_ids: set[str] = set()
+        for period in periods:
+            current_ids.add(str(period["aquira_id"]))
+            repo.add_revenue_period({
+                "aquira_id": period["aquira_id"],
+                "contract_id": period["contract_id"],
+                "period": period["period"],
+                "amount": period["amount"],
+                "station": period["station"],
+                "station_id": period["station_id"],
+                "kind": period["kind"],
+                "contract_cd": period["contract_cd"],
+            })
+        repo.delete_stale_revenue_periods(normalized.get("contract_id"), current_ids)
+        return self.build_revenue_period_payloads(contract, raw_detail, deal_id=deal_id, company_ids=company_ids)
 
     def find_deal_by_aquira_id(self, aquira_id: str | int | None) -> str | None:
         if aquira_id is None:

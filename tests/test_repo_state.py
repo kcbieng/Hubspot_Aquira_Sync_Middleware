@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import delete, select
 
-from app.db.models import DeadLetter
+from app.db.models import DeadLetter, RevenuePeriod
 from app.db.repo import Repo
 
 
@@ -29,3 +29,31 @@ def test_repo_tracks_cursor_and_dead_letter():
     assert dead_letter is not None
     assert dead_letter.entity_type == "client"
     assert dead_letter.error == "Boom"
+
+    repo.session.execute(delete(RevenuePeriod))
+    repo.session.commit()
+    repo.add_revenue_period({
+        "aquira_id": "9001:2026-01:10",
+        "contract_id": 9001,
+        "period": "2026-01-01",
+        "amount": 4000.0,
+        "station": "KCBI",
+        "station_id": 10,
+        "kind": "booked",
+        "contract_cd": "C-9001",
+    })
+    repo.add_revenue_period({
+        "aquira_id": "9001:2026-02:10",
+        "contract_id": 9001,
+        "period": "2026-02-01",
+        "amount": 4000.0,
+        "station": "KCBI",
+        "station_id": 10,
+        "kind": "booked",
+        "contract_cd": "C-9001",
+    })
+
+    repo.delete_stale_revenue_periods(9001, {"9001:2026-02:10"})
+    remaining = repo.session.execute(select(RevenuePeriod).where(RevenuePeriod.contract_id == 9001)).scalars().all()
+    assert len(remaining) == 1
+    assert remaining[0].aquira_id == "9001:2026-02:10"

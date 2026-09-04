@@ -60,10 +60,39 @@ class AquiraSessionClient:
         response = self.client.head("/User/HeartBeat")
         return response.status_code in (200, 204)
 
+    def search_clients(self, payload: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        result = self.request("POST", "/Client/Search", json=payload or {})
+        rows = result.get("Data") or result.get("Entity") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return [_unwrap_aquira_value(row) for row in rows if row]
+
+    def lookup_client(self, lookup: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        result = self.request("POST", "/Client/Lookup", json=lookup or {})
+        rows = result.get("Data") or result.get("Entity") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        return [_unwrap_aquira_value(row) for row in rows if row]
+
     def load_client(self, client_id: str | int) -> dict[str, Any]:
         payload = self.request("POST", f"/Client/Load/{client_id}")
         entity = payload.get("Entity", {})
         return _unwrap_aquira_value(entity)
+
+    def create_client(self, entity: dict[str, Any], *, whatif: bool = False) -> dict[str, Any]:
+        if whatif:
+            return {"Success": True, "whatif": True, "Entity": entity}
+        result = self.request("POST", "/Client/Create", json={"Entity": entity, "Save": True})
+        return result
+
+    def update_client(self, client_id: str | int, entity: dict[str, Any], *, sparse: bool = True, whatif: bool = False) -> dict[str, Any]:
+        if whatif:
+            return {"Success": True, "whatif": True, "Entity": {"ID": client_id, **entity}, "Sparse": sparse}
+        payload = {"Save": True, "Sparse": sparse, "Entity": entity}
+        result = self.request("PUT", f"/Client/Put", json=payload)
+        if result.get("Success") is True:
+            return result
+        return self.request("POST", f"/Client/Update", json=payload)
 
     def load_sales_reps(self) -> list[dict[str, Any]]:
         payload = self.request("POST", "/User/Lookup", json={"salesReps": True})
