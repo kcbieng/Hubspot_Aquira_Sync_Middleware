@@ -60,6 +60,15 @@ services:
       start_period: 25s
     networks:
       - app-network
+  
+  cloudflared:
+    restart: unless-stopped
+    depends_on:
+      - middleware
+    image: cloudflare/cloudflared
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${cloudflared_token}    
 
 volumes:
   postgres_data:
