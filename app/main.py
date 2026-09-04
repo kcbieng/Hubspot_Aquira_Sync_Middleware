@@ -35,20 +35,25 @@ async def lifespan(_: FastAPI):
     global poll_job
     _configure_logging()
     apply_db_overlay()
-    from app.sync.worker import start_worker
-
-    start_worker()
     settings = get_settings()
-    scheduler = BackgroundScheduler(timezone=settings.timezone)
-    scheduler.start()
-    poll_job = PollJob(scheduler)
-    poll_job.schedule(settings.sync_interval_minutes)
-    set_active_job(poll_job)
+    role = str(settings.hubquira_role or "all").strip().lower()
+    if role != "web":
+        from app.sync.worker import start_worker
+
+        start_worker()
+    scheduler = None
+    if role != "web":
+        scheduler = BackgroundScheduler(timezone=settings.timezone)
+        scheduler.start()
+        poll_job = PollJob(scheduler)
+        poll_job.schedule(settings.sync_interval_minutes)
+        set_active_job(poll_job)
     try:
         yield
     finally:
         set_active_job(None)
-        scheduler.shutdown(wait=False)
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="HubQuira", lifespan=lifespan)

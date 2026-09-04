@@ -30,6 +30,7 @@ services:
       - "${MIDDLEWARE_PORT:-8080}:8080"
     environment:
       TZ: America/Chicago
+      HUBQUIRA_ROLE: web
       AQUIRA_BASE_URL: ${AQUIRA_BASE_URL:-https://aquira2go.kcbieng.org/Aquira_WebAPI}
       AQUIRA_USERNAME: ${AQUIRA_USERNAME:-}
       AQUIRA_PASSWORD: ${AQUIRA_PASSWORD:-}
@@ -60,7 +61,52 @@ services:
       start_period: 25s
     networks:
       - app-network
-  
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: aquira-hubspot-middleware:latest
+    pull_policy: build
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["python", "-m", "app.sync.worker"]
+    environment:
+      TZ: America/Chicago
+      HUBQUIRA_ROLE: worker
+      AQUIRA_BASE_URL: ${AQUIRA_BASE_URL:-https://aquira2go.kcbieng.org/Aquira_WebAPI}
+      AQUIRA_USERNAME: ${AQUIRA_USERNAME:-}
+      AQUIRA_PASSWORD: ${AQUIRA_PASSWORD:-}
+      HUBSPOT_ACCESS_TOKEN: ${HUBSPOT_ACCESS_TOKEN:-}
+      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET:-}
+      AQUIRA_WEBHOOK_SECRET: ${AQUIRA_WEBHOOK_SECRET:-}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://middleware:${POSTGRES_PASSWORD:-middleware_password}@db:5432/aquira_hubspot}
+      SETTINGS_FERNET_KEY: ${SETTINGS_FERNET_KEY:-}
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:-admin}
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-30}
+      WHATIF: ${WHATIF:-true}
+      SYNC_CALLS: ${SYNC_CALLS:-false}
+      SYNC_CREATE_AQUIRA_CLIENT: ${SYNC_CREATE_AQUIRA_CLIENT:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BOOTSTRAP_HUBSPOT: ${BOOTSTRAP_HUBSPOT:-true}
+      AQUIRA_TEAM_ATTRIBUTE: ${AQUIRA_TEAM_ATTRIBUTE:-HubSpot Team}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      APP_NAME: ${APP_NAME:-HubQuira}
+    volumes:
+      - app_logs:/var/log/aquira
+    healthcheck:
+      test: ["CMD", "python", "-c", "from app.db.repo import Repo; Repo().close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    networks:
+      - app-network
+
   cloudflared:
     restart: unless-stopped
     depends_on:
@@ -68,7 +114,7 @@ services:
     image: cloudflare/cloudflared
     command: tunnel run
     environment:
-      - TUNNEL_TOKEN=${cloudflared_token} 
+      - TUNNEL_TOKEN=${cloudflared_token}
     networks:
       - app-network
 

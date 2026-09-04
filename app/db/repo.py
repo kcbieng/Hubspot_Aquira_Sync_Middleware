@@ -4,11 +4,11 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.db.models import AppSetting, DeadLetter, IdMap, JobEvent, OwnerMap, SyncCursor, SyncRun, SyncRunItem, TeamMap, WebhookReceipt
+from app.db.models import AppSetting, DeadLetter, IdMap, JobEvent, OwnerMap, SyncCursor, SyncRun, SyncRunItem, TeamMap, WebhookReceipt, WorkQueue
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:
@@ -201,6 +201,49 @@ class Repo:
             return
         self.session.add(WebhookReceipt(message_id=message_id))
         self.session.commit()
+
+    def add_job(self, kind: str, payload: Any, run_id: int | None = None) -> WorkQueue:
+        row = WorkQueue(
+            kind=kind,
+            status="queued",
+            payload_json=json.dumps(payload) if payload is not None else None,
+            run_id=run_id,
+        )
+        self.session.add(row)
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
+    def claim_job(self) -> WorkQueue | None:
+        stmt = select(WorkQueue).where(WorkQueue.status == "queued").order_by(WorkQueue.id.asc()).limit(1)
+        bind = self.session.get_bind()
+        if bind is not None and bind.dialect.name == "postgresql":
+            stmt = stmt.with_for_update(skip_locked=True)
+        row = self.session.execute(stmt).scalar_one_or_none()
+        if row is None:
+            return None
+        row.status = "running"
+        row.started_at = datetime.utcnow()
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
+    def finish_job(self, job_id: int, status: str = "done", error: str | None = None) -> None:
+        row = self.session.get(WorkQueue, job_id)
+        if row is None:
+            return
+        row.status = status
+        row.error = error
+        row.finished_at = datetime.utcnow()
+        self.session.commit()
+
+    def active_job_count(self) -> int:
+        return int(
+            self.session.execute(
+                select(func.count()).select_from(WorkQueue).where(WorkQueue.status.in_(("queued", "running")))
+            ).scalar()
+            or 0
+        )
 
     def close(self) -> None:
         if self._owns_session:

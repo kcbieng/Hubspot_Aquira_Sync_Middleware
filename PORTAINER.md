@@ -18,6 +18,13 @@ If the repo is private, Portainer needs GitHub credentials:
 
 Portainer clones the repo on the Docker host and **builds** `middleware` from `Dockerfile`. There is no image on Docker Hub. `docker pull` / Portainer **Re-pull image** will not pick up GitHub commits.
 
+The stack has two HubQuira containers from the same image:
+
+- `middleware` — operator UI and webhooks only (`HUBQUIRA_ROLE=web`)
+- `worker` — catalog pull, HubSpot writes, scheduled poll (`HUBQUIRA_ROLE=worker`)
+
+A sync must never run inside the UI process. If the console still freezes during a run, the worker container is not up.
+
 ## Updating after a GitHub push
 
 1. Portainer → Stacks → this stack
