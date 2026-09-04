@@ -44,6 +44,7 @@ def test_dashboard_has_live_runtime_controls():
     assert dashboard.status_code == 200
     html = dashboard.text
     assert "HubQuira" in html
+    assert "/static/hubquira-logo.png" in html
     assert 'name="whatif"' in html
     assert 'name="sync_interval_minutes"' in html
     assert 'Run sync' in html
@@ -162,3 +163,13 @@ def test_required_operator_pages_and_api_surfaces_exist():
 
     run_detail_response = client.get("/api/sync/runs/1")
     assert run_detail_response.status_code in {200, 404}
+
+
+def test_brand_assets_are_served():
+    logo = client.get("/static/hubquira-logo.png")
+    icon = client.get("/favicon.ico")
+    assert logo.status_code == 200
+    assert logo.headers["content-type"].startswith("image/")
+    assert icon.status_code == 200
+    assert len(logo.content) > 1000
+

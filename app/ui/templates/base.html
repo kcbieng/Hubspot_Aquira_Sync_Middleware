@@ -4,6 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{{ settings.app_name if settings is defined else "HubQuira" }}</title>
+    <link rel="icon" href="/favicon.ico" sizes="any">
+    <link rel="icon" type="image/png" href="/static/hubquira-logo.png">
+    <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
     {% if run is defined and run and run.status in ['queued', 'running', 'pending'] %}
       <meta http-equiv="refresh" content="2">
     {% endif %}
@@ -53,14 +56,19 @@
 
       .brand-mark .brand-icon {
         width: 42px;
-        height: 38px;
+        height: 42px;
         border-radius: 12px;
-        background: rgba(255,255,255,0.12);
+        overflow: hidden;
+        background: #fff;
         display: grid;
         place-items: center;
-        font-weight: 700;
-        font-size: 0.78rem;
-        letter-spacing: 0.02em;
+        padding: 0;
+      }
+
+      .brand-mark .brand-icon img {
+        width: 42px;
+        height: 42px;
+        display: block;
       }
 
       .nav-pills .nav-link {
@@ -162,7 +170,7 @@
     <div class="app-shell">
       <nav class="topbar d-flex flex-column flex-md-row justify-content-between align-items-md-center gap-3">
         <a href="/ui" class="brand-mark">
-          <span class="brand-icon">HQ</span>
+          <span class="brand-icon"><img src="/static/hubquira-logo.png" alt="HubQuira"></span>
           <span>
             <span class="fw-bold fs-5 d-block lh-1">{{ settings.app_name if settings is defined else "HubQuira" }}</span>
             <span class="small" style="color: rgba(255,255,255,0.7);">Aquira ↔ HubSpot</span>

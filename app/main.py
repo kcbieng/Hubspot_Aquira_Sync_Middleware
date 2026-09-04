@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import _run_sync_now, router as api_router, run_sync_client, run_sync_contract, sync_status_stub
 from app.jobs.poll import PollJob, set_active_job
@@ -58,9 +60,21 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="HubQuira", lifespan=lifespan)
+STATIC_DIR = Path(__file__).resolve().parent / "ui" / "static"
 app.include_router(api_router)
 app.include_router(ui_router)
 app.include_router(webhook_router)
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/favicon.ico")
+def favicon():
+    icon = STATIC_DIR / "favicon.ico"
+    if icon.exists():
+        return FileResponse(icon, media_type="image/x-icon")
+    png = STATIC_DIR / "hubquira-logo.png"
+    return FileResponse(png, media_type="image/png")
 
 
 @app.middleware("http")
