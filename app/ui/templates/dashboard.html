@@ -45,7 +45,7 @@
         <li class="list-group-item bg-transparent px-0 py-2"><strong>Aquira:</strong> {{ settings.aquira_base_url }}</li>
         <li class="list-group-item bg-transparent px-0 py-2"><strong>HubSpot token:</strong> {{ 'configured' if settings.hubspot_access_token else 'missing' }}</li>
         <li class="list-group-item bg-transparent px-0 py-2"><strong>What-if:</strong> {{ settings.whatif }}</li>
-        <li class="list-group-item bg-transparent px-0 py-2"><strong>Last success:</strong> {{ last_success_at or 'never' }}</li>
+        <li class="list-group-item bg-transparent px-0 py-2"><strong>Build:</strong> {{ revision }}</li>
         {% if last_error %}
           <li class="list-group-item bg-transparent px-0 py-2 text-danger"><strong>Last error:</strong> {{ last_error }}</li>
         {% endif %}

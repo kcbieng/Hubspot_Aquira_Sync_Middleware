@@ -11,6 +11,7 @@ from app.runtime import apply_db_overlay
 from app.session import is_logged_in
 from app.settings import get_settings
 from app.ui.routes import router as ui_router
+from app.version import REVISION
 from app.webhooks.routes import router as webhook_router
 
 poll_job: PollJob | None = None
@@ -71,7 +72,7 @@ def root():
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "service": get_settings().app_name}
+    return {"status": "ok", "service": get_settings().app_name, "revision": REVISION}
 
 
 @app.get("/ready")

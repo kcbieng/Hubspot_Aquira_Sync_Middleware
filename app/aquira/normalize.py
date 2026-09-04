@@ -171,6 +171,55 @@ def _first_station_name(value: Any) -> str:
     return as_str(inner)
 
 
+def _entity_get(entity: dict[str, Any], *names: str) -> Any:
+    wanted = {name.lower() for name in names}
+    for key, value in entity.items():
+        if str(key).lower() in wanted and value not in (None, ""):
+            return value
+    return None
+
+
+def _entity_str(entity: dict[str, Any], *names: str) -> str:
+    wanted = [name.lower() for name in names]
+    lower_map = {str(key).lower(): value for key, value in entity.items()}
+    for name in wanted:
+        text = as_str(lower_map.get(name)).strip()
+        if text:
+            return text
+    return ""
+
+
+def _address_parts(entity: dict[str, Any]) -> tuple[str, str, str]:
+    physical = _entity_get(entity, "PhysicalAddress", "Addresses", "Address")
+    if isinstance(physical, dict) and physical.get("Physical") is not None:
+        physical = physical.get("Physical")
+    if isinstance(physical, dict):
+        street = as_str(
+            physical.get("Address")
+            or physical.get("Value")
+            or physical.get("Line1")
+            or physical.get("Address1")
+        ).strip()
+        city = as_str(physical.get("City")).strip()
+        state = as_str(physical.get("Region") or physical.get("State")).strip()
+        return street, city, state
+    street = as_str(physical) if not isinstance(physical, dict) else ""
+    if not street:
+        street = _entity_str(entity, "Address1", "Address")
+    return street, _entity_str(entity, "City"), _entity_str(entity, "State", "Region")
+
+
+def _party_flags(entity: dict[str, Any]) -> tuple[bool, bool]:
+    is_account = as_bool(_entity_get(entity, "IsAccount"))
+    is_advertiser = as_bool(_entity_get(entity, "IsAdvertiser"))
+    if is_account or is_advertiser:
+        return is_account, is_advertiser
+    type_code = _status_int(_entity_get(entity, "Type", "ClientType"))
+    if type_code:
+        return bool(type_code & 1), bool(type_code & 2)
+    return False, False
+
+
 def normalize_contact(payload: Any, fallback_client_id: int | None = None) -> dict[str, Any] | None:
     entity = entity_of(payload)
     ident = entity.get("ID", entity.get("Id", entity.get("ContactID", entity.get("Key"))))
@@ -191,7 +240,7 @@ def normalize_contact(payload: Any, fallback_client_id: int | None = None) -> di
 
 def normalize_client(payload: Any) -> dict[str, Any] | None:
     entity = entity_of(payload)
-    ident = as_num(entity.get("ID", entity.get("Id", entity.get("ClientID"))))
+    ident = as_num(_entity_get(entity, "ID", "Id", "ClientID") or entity.get("ID") or entity.get("Id") or entity.get("ClientID"))
     if not ident:
         return None
     client_id = int(ident)
@@ -199,29 +248,32 @@ def normalize_client(payload: Any) -> dict[str, Any] | None:
         row
         for row in (
             normalize_contact(item, client_id)
-            for item in as_array(entity.get("Contacts", entity.get("ClientContacts")))
+            for item in as_array(_entity_get(entity, "Contacts", "ClientContacts") or entity.get("Contacts") or entity.get("ClientContacts") or [])
         )
         if row
     ]
-    account_id = _ref_id(entity.get("AccountID") or entity.get("Account"))
+    account_id = _ref_id(_entity_get(entity, "AccountID", "Account"))
     sales_rep_id = _sales_rep_id(entity)
+    is_account, is_advertiser = _party_flags(entity)
+    name = _entity_str(entity, "Name", "Fullname", "FullName", "LongName", "Shortname", "ShortName", "ClientCD") or f"Client {client_id}"
+    street, city, state = _address_parts(entity)
     return {
         "ID": client_id,
         "Version": int(as_num(entity.get("Version"), 0) or 0) or None,
-        "Name": as_str(entity.get("Name", entity.get("LongName", entity.get("ShortName")))) or f"Client {client_id}",
-        "LongName": as_str(entity.get("LongName")) or None,
-        "ShortName": as_str(entity.get("ShortName")) or None,
-        "Email": as_str(entity.get("Email")) or None,
-        "Phone": as_str(entity.get("Phone", entity.get("Phone1", entity.get("MainPhone")))) or None,
-        "Website": as_str(entity.get("Website", entity.get("Domain", entity.get("URL")))) or None,
-        "PhysicalAddress": as_str(entity.get("PhysicalAddress", entity.get("Address1", entity.get("Address")))) or None,
-        "City": as_str(entity.get("City")) or None,
-        "State": as_str(entity.get("State", entity.get("Region"))) or None,
-        "IsAccount": as_bool(entity.get("IsAccount")),
-        "IsAdvertiser": as_bool(entity.get("IsAdvertiser")),
+        "Name": name,
+        "LongName": _entity_str(entity, "LongName") or None,
+        "ShortName": _entity_str(entity, "Shortname", "ShortName") or None,
+        "Email": _entity_str(entity, "Email") or None,
+        "Phone": _entity_str(entity, "Phone", "BusinessPhone1", "Phone1", "MainPhone") or None,
+        "Website": _entity_str(entity, "Website", "Domain", "URL") or None,
+        "PhysicalAddress": street or None,
+        "City": city or None,
+        "State": state or None,
+        "IsAccount": is_account,
+        "IsAdvertiser": is_advertiser,
         "AccountID": account_id,
         "SalesRepID": sales_rep_id,
-        "SalesRepName": as_str(entity.get("SalesRepName")) or _ref_name(entity.get("SalesRep")) or None,
+        "SalesRepName": _entity_str(entity, "SalesRepName") or _ref_name(entity.get("SalesRep")) or None,
         "Contacts": contacts,
     }
 
@@ -350,6 +402,7 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         advertiser_id = account_id
     sales_rep_id = _sales_rep_id(entity)
     advertiser_name = _ref_name(entity.get("Advertiser")) or as_str(entity.get("AdvertiserName"))
+    account_name = _ref_name(entity.get("Account")) or as_str(entity.get("AccountName"))
     contract_cd = as_str(entity.get("ContractCD", entity.get("ContractCode", entity.get("Code")))) or f"C-{ident}"
     description = as_str(entity.get("Description")).strip() or None
     raw_name = as_str(entity.get("Name", entity.get("Title")))
@@ -411,11 +464,79 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         "SignDate": iso_date(entity.get("SignDate") or entity.get("SignedDate")) or None,
         "AccountID": account_id,
         "AdvertiserID": advertiser_id,
+        "AccountName": account_name or None,
+        "AdvertiserName": advertiser_name or None,
         "SalesRepID": sales_rep_id,
         "Status": status_label,
         "Stations": stations,
         "lines": lines,
     }
+
+
+def merge_client(summary: dict[str, Any] | None, loaded: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not loaded and not summary:
+        return None
+    if not loaded:
+        return summary
+    if not summary:
+        return loaded
+
+    def _empty(value: Any) -> bool:
+        return value in (None, "", [], 0, 0.0)
+
+    merged = dict(summary)
+    ident = merged.get("ID") or loaded.get("ID")
+    for key, value in loaded.items():
+        if key in {"IsAccount", "IsAdvertiser"}:
+            merged[key] = bool(value or merged.get(key))
+            continue
+        if key == "Contacts":
+            if value:
+                merged[key] = value
+            continue
+        if key == "Name" and _is_fallback_client_name(value, ident) and not _is_fallback_client_name(merged.get("Name"), ident):
+            continue
+        if not _empty(value):
+            merged[key] = value
+    return merged
+
+
+def _is_fallback_client_name(name: Any, ident: Any) -> bool:
+    text = str(name or "").strip()
+    return not text or text == f"Client {ident}" or text == str(ident)
+
+
+def clients_from_contracts(contracts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[int, dict[str, Any]] = {}
+    for contract in contracts:
+        account_id = contract.get("AccountID")
+        advertiser_id = contract.get("AdvertiserID")
+        if account_id:
+            ident = int(account_id)
+            row = by_id.setdefault(
+                ident,
+                {"ID": ident, "Name": f"Client {ident}", "IsAccount": False, "IsAdvertiser": False, "Contacts": []},
+            )
+            if contract.get("AccountName"):
+                row["Name"] = str(contract.get("AccountName"))
+            row["IsAccount"] = True
+            if advertiser_id and int(advertiser_id) == ident:
+                row["IsAdvertiser"] = True
+        if advertiser_id:
+            ident = int(advertiser_id)
+            row = by_id.setdefault(
+                ident,
+                {"ID": ident, "Name": f"Client {ident}", "IsAccount": False, "IsAdvertiser": False, "Contacts": []},
+            )
+            advertiser_name = contract.get("AdvertiserName") or (
+                None if str(contract.get("Name") or "").startswith("Contract ") else contract.get("Name")
+            )
+            if advertiser_name and _is_fallback_client_name(row.get("Name"), ident):
+                row["Name"] = str(advertiser_name)
+            row["IsAdvertiser"] = True
+            if account_id and int(account_id) == ident:
+                row["IsAccount"] = True
+    return list(by_id.values())
 
 
 def merge_contract(summary: dict[str, Any] | None, loaded: dict[str, Any] | None) -> dict[str, Any] | None:

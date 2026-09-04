@@ -18,6 +18,8 @@ If the repo is private, Portainer needs GitHub credentials:
 
 Portainer clones the repo on the Docker host and builds `Dockerfile`. The host must be able to reach GitHub and `https://api.hubapi.com` plus your Aquira WebAPI URL.
 
+After pushing to `main`, use **Pull and redeploy** with **Re-pull image** / **Rebuild** enabled. Cached `aquira-hubspot-middleware:latest` will keep serving the old parser. Confirm the Dashboard **Build** line matches the latest revision.
+
 ## Environment
 
 Copy [`stack.env.example`](stack.env.example) into the Portainer **Environment variables** editor.

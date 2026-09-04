@@ -11,7 +11,7 @@ from app.runtime import persist_settings
 from app.session import is_logged_in, set_session
 from app.settings import get_settings
 from app.sync.orchestrator import SyncContext, SyncOrchestrator
-from app.sync.whatif import SyncInProgress
+from app.version import REVISION
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 templates = Jinja2Templates(directory="app/ui/templates")
@@ -25,6 +25,7 @@ def _require_login(request: Request):
 
 def _page(request: Request, name: str, context: dict):
     context.setdefault("settings", get_settings())
+    context.setdefault("revision", REVISION)
     return templates.TemplateResponse(request, name, context)
 
 

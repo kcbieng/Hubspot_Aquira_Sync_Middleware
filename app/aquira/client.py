@@ -6,7 +6,9 @@ from typing import Any
 import httpx
 
 from app.aquira.normalize import (
+    clients_from_contracts,
     list_from_envelope,
+    merge_client,
     merge_contract,
     normalize_client,
     normalize_contact,
@@ -158,7 +160,7 @@ class AquiraSessionClient:
             return self.version or "ok"
 
     def load_client(self, client_id: str | int) -> dict[str, Any]:
-        payload = self.request("POST", f"/Client/Load/{client_id}")
+        payload = self.request("POST", f"/Client/Load/{client_id}", json={"name": "load"})
         client = normalize_client(payload) or {}
         if client and not client.get("Contacts"):
             contacts = self.lookup_contacts(client_id)
@@ -183,18 +185,25 @@ class AquiraSessionClient:
 
     def search_clients(self, search_term: str = "") -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
-        search = self.try_request("POST", "/Client/Search", json={"SearchTerm": search_term, "CurrentOnly": True})
-        if search:
+        get_all = self.try_request("GET", "/Client/Get")
+        if get_all and list_from_envelope(get_all):
+            payloads.append(get_all)
+        search = self.try_request(
+            "POST",
+            "/Client/Search",
+            json={"SearchTerm": search_term or "", "QuickSearchField": 1},
+        )
+        if search and list_from_envelope(search):
             payloads.append(search)
-        if not search or not list_from_envelope(search):
+        if not payloads:
             for method, path, body in (
-                ("POST", "/Client/AdvancedSearch", {"SearchTerm": search_term, "CurrentOnly": True}),
-                ("GET", "/Client/Get", None),
-                ("POST", "/Client/Lookup", {"SearchTerm": search_term}),
+                ("POST", "/Client/Lookup", {"SearchTerm": search_term or "", "CurrentOnly": True}),
+                ("POST", "/Client/AdvancedSearch", {"SearchTerm": search_term or ""}),
             ):
-                payload = self.try_request(method, path, json=body) if body is not None else self.try_request(method, path)
-                if payload:
+                payload = self.try_request(method, path, json=body)
+                if payload and list_from_envelope(payload):
                     payloads.append(payload)
+                    break
         by_id: dict[int, dict[str, Any]] = {}
         for payload in payloads:
             for row in list_from_envelope(payload):
@@ -257,7 +266,7 @@ class AquiraSessionClient:
         return []
 
     def load_contract(self, contract_id: str | int) -> dict[str, Any] | None:
-        payload = self.request("POST", f"/Contract/Load/{contract_id}")
+        payload = self.request("POST", f"/Contract/Load/{contract_id}", json={"name": "load"})
         lines = self.load_spot_lines(contract_id, payload)
         return normalize_contract(payload, lines)
 
@@ -293,13 +302,17 @@ class AquiraSessionClient:
             clients = filtered
         loaded_clients: list[dict[str, Any]] = []
         contacts: list[dict[str, Any]] = []
+        clients_by_id: dict[int, dict[str, Any]] = {}
         for client in clients:
             try:
-                full = self.load_client(client["ID"]) or client
-            except Exception:
-                full = client
-            loaded_clients.append(full)
-            contacts.extend(full.get("Contacts") or [])
+                loaded = self.load_client(client["ID"])
+            except Exception as exc:
+                logger.warning("Client/Load/%s failed: %s", client.get("ID"), exc)
+                loaded = None
+            merged = merge_client(client, loaded)
+            if not merged:
+                continue
+            clients_by_id[int(merged["ID"])] = merged
 
         contracts = self.search_contracts(aquira_id or "")
         if aquira_id:
@@ -324,6 +337,14 @@ class AquiraSessionClient:
             merged = merge_contract(contract, loaded)
             if merged:
                 loaded_contracts.append(merged)
+
+        for stub in clients_from_contracts(loaded_contracts):
+            existing = clients_by_id.get(int(stub["ID"]))
+            clients_by_id[int(stub["ID"])] = merge_client(stub, existing) or stub
+
+        loaded_clients = sorted(clients_by_id.values(), key=lambda row: str(row.get("Name") or ""))
+        for client in loaded_clients:
+            contacts.extend(client.get("Contacts") or [])
         reps = self.load_sales_reps()
         return {"clients": loaded_clients, "contacts": contacts, "contracts": loaded_contracts, "reps": reps}
 
