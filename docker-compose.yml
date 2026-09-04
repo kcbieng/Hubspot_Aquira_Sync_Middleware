@@ -46,6 +46,7 @@ services:
       SYNC_CREATE_AQUIRA_CLIENT: ${SYNC_CREATE_AQUIRA_CLIENT:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       BOOTSTRAP_HUBSPOT: ${BOOTSTRAP_HUBSPOT:-true}
+      AQUIRA_TEAM_ATTRIBUTE: ${AQUIRA_TEAM_ATTRIBUTE:-HubSpot Team}
       ENVIRONMENT: ${ENVIRONMENT:-production}
     volumes:
       - app_logs:/var/log/aquira

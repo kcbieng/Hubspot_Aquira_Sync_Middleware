@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Team assignment</div>
+        <h2 class="mb-0">HubSpot team mapping</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      Create an Aquira custom attribute named <strong>{{ attribute_name }}</strong> whose value is the
+      <em>exact</em> HubSpot team name. Set it on the client, advertiser, account, contract, or proposal.
+      Contacts inherit the team from their client, then from that client&rsquo;s contracts.
+      Suggest matches by exact name. Unmapped values can still be assigned here, including advertiser
+      names and station call letters used as fallbacks.
+    </p>
+
+    <form method="post" action="/ui/teams">
+      <div class="d-flex gap-2 mb-3">
+        <button class="btn btn-primary btn-sm" type="submit" name="action" value="suggest">Suggest matches</button>
+        <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="save">Save map</button>
+      </div>
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead>
+            <tr>
+              <th>Aquira value</th>
+              <th>HubSpot team</th>
+              <th>Enabled</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>
+                  <input type="hidden" name="aquira_key" value="{{ row.aquira_key }}">
+                  <strong>{{ row.aquira_label or row.aquira_key }}</strong>
+                  <div class="small text-muted">{{ row.source or "attribute" }}</div>
+                  {% if row.suggested %}<span class="badge text-bg-light">suggested</span>{% endif %}
+                </td>
+                <td>
+                  <select class="form-select" name="hubspot_team_id_{{ row.aquira_key }}">
+                    <option value="">Unmapped — do not set HubSpot team</option>
+                    {% for team in hubspot_teams %}
+                      <option value="{{ team.id }}" {% if team.id == row.hubspot_team_id %}selected{% endif %}>
+                        {{ team.name }}
+                      </option>
+                    {% endfor %}
+                  </select>
+                </td>
+                <td>
+                  <input class="form-check-input" type="checkbox" name="enabled_{{ row.aquira_key }}" {% if row.enabled %}checked{% endif %}>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="3" class="text-muted">No team values yet. Save Aquira credentials, then click Suggest matches.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </form>
+  </div>
+{% endblock %}

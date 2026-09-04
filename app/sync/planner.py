@@ -64,7 +64,7 @@ def field_diff(old: dict[str, Any] | None, new: dict[str, Any] | None) -> list[d
 def company_properties(client: dict[str, Any]) -> dict[str, Any]:
     website = str(client.get("Website") or "")
     domain = website.replace("https://", "").replace("http://", "")
-    return {
+    props = {
         "name": client.get("Name") or "",
         "domain": domain,
         "phone": client.get("Phone") or "",
@@ -75,10 +75,13 @@ def company_properties(client: dict[str, Any]) -> dict[str, Any]:
         "aquira_party_type": party_type_for_client(client),
         "aquira_version": client.get("Version"),
     }
+    if client.get("hubspot_team_id"):
+        props["hubspot_team_id"] = str(client.get("hubspot_team_id"))
+    return props
 
 
 def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
-    return {
+    props = {
         "firstname": contact.get("FirstName") or "",
         "lastname": contact.get("LastName") or "",
         "email": str(contact.get("Email") or "").lower(),
@@ -87,6 +90,9 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
         "aquira_entity_type": "contact",
         "aquira_client_id": str(contact.get("ClientID") or ""),
     }
+    if contact.get("hubspot_team_id"):
+        props["hubspot_team_id"] = str(contact.get("hubspot_team_id"))
+    return props
 
 
 def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None) -> dict[str, Any]:
@@ -96,7 +102,7 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
     cancelled = bool(contract.get("Cancelled"))
     is_contract = bool(contract.get("IsContract"))
     stage = "closedlost" if cancelled else "closedwon" if is_contract else "proposal"
-    return {
+    props = {
         "dealname": f"{contract.get('ContractCD')} — {label}",
         "amount": contract.get("TotalValue") or 0,
         "closedate": contract.get("EndDate") or "",
@@ -115,6 +121,9 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
         "aquira_advertiser_id": str(contract.get("AdvertiserID") or ""),
         "aquira_sales_rep": str(contract.get("SalesRepID") or ""),
     }
+    if contract.get("hubspot_team_id"):
+        props["hubspot_team_id"] = str(contract.get("hubspot_team_id"))
+    return props
 
 
 def plan_upsert(

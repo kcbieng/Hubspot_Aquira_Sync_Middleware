@@ -17,6 +17,10 @@ def unwrap_deep(value: Any) -> Any:
     if isinstance(value, list):
         return [unwrap_deep(item) for item in value]
     if isinstance(value, dict):
+        # AttributeDataModel is {Name, Value, ID}. Keep the record so extract_attributes
+        # can read the name; still unwrap nested FieldValue wrappers inside it.
+        if "Value" in value and ("Name" in value or "Label" in value or "AttributeName" in value):
+            return {key: unwrap_deep(item) for key, item in value.items()}
         if "Value" in value:
             return unwrap_deep(value.get("Value"))
         return {key: unwrap_deep(item) for key, item in value.items()}
@@ -230,6 +234,44 @@ def _party_flags(entity: dict[str, Any]) -> tuple[bool, bool]:
     return False, False
 
 
+def extract_attributes(entity: dict[str, Any]) -> dict[str, str]:
+    out: dict[str, str] = {}
+
+    def add(name: Any, value: Any) -> None:
+        label = as_str(name or "").strip()
+        inner = unwrap(value)
+        if isinstance(inner, dict):
+            inner = inner.get("Name") or inner.get("Text") or inner.get("Label") or inner.get("Value")
+        text = as_str(inner).strip()
+        if label and text and not isinstance(inner, (dict, list)):
+            out[label] = text
+
+    bags = [
+        entity.get("Attributes"),
+        entity.get("ClientAttributes"),
+        entity.get("UserAttributes"),
+        entity.get("ContractAttributes"),
+        entity.get("CustomAttributes"),
+    ]
+    for raw in bags:
+        if not raw:
+            continue
+        if isinstance(raw, dict):
+            if raw.get("Name") or raw.get("Label") or raw.get("AttributeName"):
+                raw = [raw]
+            else:
+                for key, value in raw.items():
+                    add(key, value)
+                continue
+        items = raw if isinstance(raw, list) else as_array(unwrap(raw))
+        for item in items:
+            rec = as_record(item)
+            if rec.get("Name") in (None, "") and isinstance(rec.get("Value"), dict) and rec["Value"].get("Name"):
+                rec = as_record(rec.get("Value"))
+            add(rec.get("Name") or rec.get("Label") or rec.get("AttributeName"), rec.get("Value"))
+    return out
+
+
 def normalize_contact(payload: Any, fallback_client_id: int | None = None) -> dict[str, Any] | None:
     entity = entity_of(payload)
     ident = _entity_get(entity, "ID", "Id", "ContactID", "Key")
@@ -266,6 +308,7 @@ def normalize_contact(payload: Any, fallback_client_id: int | None = None) -> di
         "LastName": _entity_str(entity, "LastName") or last_split,
         "Email": email,
         "Phone": phone,
+        "Attributes": extract_attributes(entity),
     }
 
 
@@ -306,6 +349,7 @@ def normalize_client(payload: Any) -> dict[str, Any] | None:
         "SalesRepID": sales_rep_id,
         "SalesRepName": _entity_str(entity, "SalesRepName") or _ref_name(entity.get("SalesRep")) or None,
         "Contacts": contacts,
+        "Attributes": extract_attributes(entity),
     }
 
 
@@ -501,6 +545,7 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         "Status": status_label,
         "Stations": stations,
         "lines": lines,
+        "Attributes": extract_attributes(entity),
     }
 
 
@@ -524,6 +569,9 @@ def merge_client(summary: dict[str, Any] | None, loaded: dict[str, Any] | None) 
         if key == "Contacts":
             if value:
                 merged[key] = value
+            continue
+        if key == "Attributes":
+            merged[key] = {**(merged.get("Attributes") or {}), **(value or {})}
             continue
         if key == "Name" and _is_fallback_client_name(value, ident) and not _is_fallback_client_name(merged.get("Name"), ident):
             continue
@@ -589,6 +637,9 @@ def merge_contract(summary: dict[str, Any] | None, loaded: dict[str, Any] | None
         if key == "lines":
             if value:
                 merged[key] = value
+            continue
+        if key == "Attributes":
+            merged[key] = {**(merged.get("Attributes") or {}), **(value or {})}
             continue
         if not _empty(value):
             merged[key] = value

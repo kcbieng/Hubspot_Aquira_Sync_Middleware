@@ -1,1 +1,1 @@
-"""Mapping helpers for parties, owners, and revenue allocation."""
+"""Mapping helpers for parties, owners, teams, and revenue allocation."""

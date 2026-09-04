@@ -128,17 +128,23 @@ def test_required_operator_pages_and_api_surfaces_exist():
 
     settings_page = client.get("/ui/settings")
     owners_page = client.get("/ui/owners")
+    teams_page = client.get("/ui/teams")
     runs_page = client.get("/ui/runs")
     logs_page = client.get("/ui/logs")
 
     assert settings_page.status_code == 200
     assert owners_page.status_code == 200
+    assert teams_page.status_code == 200
     assert runs_page.status_code == 200
     assert logs_page.status_code == 200
 
     suggest_response = client.get("/api/owners/suggest")
     assert suggest_response.status_code == 200
     assert isinstance(suggest_response.json(), list)
+
+    team_suggest = client.get("/api/teams/suggest")
+    assert team_suggest.status_code == 200
+    assert isinstance(team_suggest.json(), list)
 
     run_detail_response = client.get("/api/sync/runs/1")
     assert run_detail_response.status_code in {200, 404}

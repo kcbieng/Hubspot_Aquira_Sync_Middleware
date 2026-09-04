@@ -239,6 +239,31 @@ class SyncOrchestrator:
                 mapping[str(aquira_id)] = str(owner_id)
         return mapping
 
+    def _team_map(self, repo: Any) -> dict[str, str]:
+        from app.mapping.teams import normalize_team_key
+
+        mapping: dict[str, str] = {}
+        lister = getattr(repo, "list_team_maps", None)
+        if not callable(lister):
+            return mapping
+        try:
+            rows = lister()
+        except Exception:
+            return mapping
+        for row in rows or []:
+            enabled = getattr(row, "enabled", None)
+            if enabled is None and isinstance(row, dict):
+                enabled = row.get("enabled")
+            team_id = getattr(row, "hubspot_team_id", None)
+            if team_id is None and isinstance(row, dict):
+                team_id = row.get("hubspot_team_id")
+            key = getattr(row, "aquira_key", None)
+            if key is None and isinstance(row, dict):
+                key = row.get("aquira_key") or row.get("aquira_label")
+            if enabled and team_id and key:
+                mapping[normalize_team_key(key)] = str(team_id)
+        return mapping
+
     def _pull_live(
         self,
         repo: Any,
@@ -433,6 +458,26 @@ class SyncOrchestrator:
                 existing = existing if existing is not None else pulled_existing
             catalog = catalog or empty_catalog()
             existing = existing or empty_existing()
+            from app.mapping.teams import apply_team_ids, team_attribute_names
+
+            teams_by_name: dict[str, str] = {}
+            if live_hubspot is not None and hasattr(live_hubspot, "list_teams"):
+                try:
+                    for team in live_hubspot.list_teams() or []:
+                        name = str(team.get("name") or "").strip()
+                        ident = str(team.get("id") or "")
+                        if name and ident:
+                            from app.mapping.teams import normalize_team_key
+
+                            teams_by_name[normalize_team_key(name)] = ident
+                except Exception:
+                    teams_by_name = {}
+            apply_team_ids(
+                catalog,
+                self._team_map(repo),
+                teams_by_name=teams_by_name,
+                attribute_names=team_attribute_names(settings.aquira_team_attribute),
+            )
 
             items = self.build_plan(
                 catalog,

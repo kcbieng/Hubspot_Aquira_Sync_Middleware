@@ -220,6 +220,28 @@ class HubSpotClient:
             )
         return owners
 
+    def list_teams(self) -> list[dict[str, Any]]:
+        teams: dict[str, dict[str, Any]] = {}
+        if self.access_token:
+            try:
+                payload = self._request("GET", "/settings/v3/users/teams")
+                for row in payload.get("results") or []:
+                    ident = str(row.get("id") or "")
+                    if ident:
+                        teams[ident] = {
+                            "id": ident,
+                            "name": str(row.get("name") or ident),
+                            "user_ids": [str(user_id) for user_id in (row.get("userIds") or [])],
+                        }
+            except Exception:
+                pass
+            for owner in self.get_owners().get("results") or []:
+                for team in owner.get("teams") or []:
+                    ident = str(team.get("id") or "")
+                    if ident and ident not in teams:
+                        teams[ident] = {"id": ident, "name": str(team.get("name") or ident), "user_ids": []}
+        return sorted(teams.values(), key=lambda row: str(row.get("name") or "").lower())
+
     def list_sales_users(self) -> list[dict[str, Any]]:
         """CRM owners joined with portal users so Super Admins can be labeled.
 

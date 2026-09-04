@@ -1,4 +1,5 @@
-REVISION = "2026.09.04-deal-bool-props"
+REVISION = "2026.09.04-team-map"
+
 
 
 

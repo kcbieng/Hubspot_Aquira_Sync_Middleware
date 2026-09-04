@@ -3,10 +3,11 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from app.aquira.client import AquiraSessionClient, test_aquira_connection
-from app.db.models import OwnerMap
+from app.db.models import OwnerMap, TeamMap
 from app.db.repo import Repo
 from app.hubspot.client import HubSpotClient
 from app.mapping.owners import suggest_owner_map
+from app.mapping.teams import collect_team_keys, suggest_team_map, team_attribute_names
 from app.runtime import mask_secret, persist_settings
 from app.session import clear_session, set_session
 from app.settings import get_settings
@@ -312,3 +313,89 @@ def owner_map() -> list[dict[str, object]]:
     finally:
         repo.close()
     return suggestions
+
+
+@router.get("/teams/hubspot")
+def hubspot_teams() -> list[dict[str, object]]:
+    client = HubSpotClient()
+    try:
+        return client.list_teams()
+    except Exception:
+        return []
+
+
+@router.get("/teams/aquira")
+def aquira_team_keys() -> list[dict[str, object]]:
+    client = AquiraSessionClient()
+    try:
+        client.login()
+        catalog = client.load_catalog()
+    except Exception:
+        catalog = {"clients": [], "contacts": [], "contracts": []}
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+    return collect_team_keys(catalog, team_attribute_names(get_settings().aquira_team_attribute))
+
+
+@router.get("/teams/suggest")
+def team_suggest() -> list[dict[str, object]]:
+    return suggest_team_map(aquira_team_keys(), hubspot_teams())
+
+
+@router.get("/teams/map")
+def team_map() -> list[dict[str, object]]:
+    suggestions = suggest_team_map(aquira_team_keys(), hubspot_teams())
+    repo = Repo()
+    try:
+        for suggestion in suggestions:
+            aquira_key = str(suggestion.get("aquira_key") or "")
+            if not aquira_key:
+                continue
+            existing = repo.session.get(TeamMap, aquira_key)
+            if existing is not None and not existing.suggested:
+                existing.aquira_label = suggestion.get("aquira_label") or existing.aquira_label
+                existing.source = suggestion.get("source") or existing.source
+                repo.session.add(existing)
+                continue
+            repo.session.merge(
+                TeamMap(
+                    aquira_key=aquira_key,
+                    aquira_label=suggestion.get("aquira_label"),
+                    source=suggestion.get("source"),
+                    hubspot_team_id=suggestion.get("hubspot_team_id"),
+                    hubspot_team_name=suggestion.get("hubspot_team_name"),
+                    enabled=bool(suggestion.get("enabled")),
+                    suggested=bool(suggestion.get("suggested")),
+                    updated_at=datetime.utcnow(),
+                )
+            )
+        repo.session.commit()
+    finally:
+        repo.close()
+    return suggestions
+
+
+@router.put("/teams/map")
+def update_team_map(payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    repo = Repo()
+    for suggestion in payload:
+        aquira_key = str(suggestion.get("aquira_key") or "")
+        if not aquira_key:
+            continue
+        repo.session.merge(
+            TeamMap(
+                aquira_key=aquira_key,
+                aquira_label=suggestion.get("aquira_label"),
+                source=suggestion.get("source"),
+                hubspot_team_id=suggestion.get("hubspot_team_id"),
+                hubspot_team_name=suggestion.get("hubspot_team_name"),
+                enabled=bool(suggestion.get("enabled")),
+                suggested=bool(suggestion.get("suggested")),
+                updated_at=datetime.utcnow(),
+            )
+        )
+    repo.session.commit()
+    return payload

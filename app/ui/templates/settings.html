@@ -37,6 +37,11 @@
         <input class="form-control" id="hubspot_client_secret" name="hubspot_client_secret" type="password" placeholder="unchanged if blank" value="">
       </div>
       <div class="col-md-6">
+        <label class="form-label" for="aquira_team_attribute">Aquira team attribute name</label>
+        <input class="form-control" id="aquira_team_attribute" name="aquira_team_attribute" value="{{ settings.aquira_team_attribute }}">
+        <div class="form-text">Custom Aquira attribute whose value is the exact HubSpot team name. Default: HubSpot Team.</div>
+      </div>
+      <div class="col-md-6">
         <label class="form-label" for="sync_interval_minutes">Sync interval minutes</label>
         <input class="form-control" id="sync_interval_minutes" name="sync_interval_minutes" type="number" value="{{ settings.sync_interval_minutes }}">
       </div>

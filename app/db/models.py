@@ -76,6 +76,19 @@ class OwnerMap(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class TeamMap(Base):
+    __tablename__ = "team_map"
+
+    aquira_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    aquira_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    hubspot_team_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hubspot_team_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    suggested: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SyncRun(Base):
     __tablename__ = "sync_run"
 

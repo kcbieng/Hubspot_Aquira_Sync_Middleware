@@ -11,6 +11,7 @@ The scheduler honors what-if mode. Live writes only happen when you turn what-if
 - Optionally creates an Aquira client for a HubSpot company that has no `aquira_id`
 - Allocates contract dollars across calendar months (spot-weighted when line data exists, even fallback otherwise)
 - Maps Aquira sales reps to HubSpot **users** (deal `hubspot_owner_id`). HubSpot's Owner picker is anyone who can own a record and is often just Super Admins — those are labeled and excluded from auto-suggest.
+- Maps Aquira teams onto HubSpot **teams** (`hubspot_team_id` on companies, contacts, and deals). Primary source is a custom Aquira attribute (default name `HubSpot Team`) whose value is the exact HubSpot team name. Unlabeled advertisers and unique station call letters can be mapped as fallbacks. Contacts inherit from their client, then from that client's contracts.
 - Accepts HubSpot CRM webhooks and runs a targeted identity writeback
 - Records every plan item and field diff so operators can inspect a what-if before enabling writes
 
@@ -37,9 +38,10 @@ Operator path after deploy:
 1. Open `/ui/login` (default user `admin` unless you changed `UI_USERNAME`)
 2. **Settings** — confirm URLs, save, **Test Aquira** and **Test HubSpot**
 3. **Owners** — Suggest matches, review, save. Saved mappings are not overwritten by later suggestions.
-4. Dashboard **Run what-if now** — inspect `/ui/runs/{id}` diffs
-5. Type `WRITE` and **Force live sync** only after the plan looks right
-6. Turn off what-if when you want the 30-minute scheduler to write
+4. **Teams** — Create the Aquira custom attribute (default `HubSpot Team`) with the exact HubSpot team name on the client/advertiser/account/contract/proposal. Suggest matches, map any advertiser or station fallbacks, save.
+5. Dashboard **Run what-if now** — inspect `/ui/runs/{id}` diffs
+6. Type `WRITE` and **Force live sync** only after the plan looks right
+7. Turn off what-if when you want the 30-minute scheduler to write
 
 In production (`ENVIRONMENT=production`) `/api/*` and `/sync/*` require the same operator login cookie as the UI. `/health`, `/ready`, and `/webhooks/hubspot` stay reachable without that cookie.
 

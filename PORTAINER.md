@@ -60,6 +60,7 @@ Recommended:
 | `PUBLIC_BASE_URL` | empty | `https://sync.example.com` so HubSpot webhook signatures verify behind a reverse proxy |
 | `HUBSPOT_CLIENT_SECRET` | empty | App secret from the HubSpot webhook subscription |
 | `SYNC_INTERVAL_MINUTES` | `30` | Scheduler interval |
+| `AQUIRA_TEAM_ATTRIBUTE` | `HubSpot Team` | Aquira custom attribute whose value is the exact HubSpot team name |
 | `MIDDLEWARE_PORT` | `8080` | Host port published by the stack |
 
 Generate the Fernet key:
@@ -76,7 +77,7 @@ Enable at least:
 - `crm.objects.contacts.read` / `crm.objects.contacts.write`
 - `crm.objects.deals.read` / `crm.objects.deals.write`
 - `crm.objects.owners.read`
-- `settings.users.read` (optional but recommended — labels Super Admins vs sales roles so mapping does not assign deals to portal admins)
+- `settings.users.read` (optional but recommended — labels Super Admins vs sales roles, and lists HubSpot teams for contact/company/deal team assignment)
 - `crm.schemas.companies.write` / `crm.schemas.contacts.write` / `crm.schemas.deals.write` (schema bootstrap)
 - Custom objects / schemas if you want `revenue_period` created automatically
 
@@ -94,10 +95,11 @@ Subscribe to:
 2. Open `http://<host>:8080/ui/login`
 3. Settings → Test Aquira and Test HubSpot. Both must return `status: ok`
 4. Owners → Suggest matches → save
-5. Dashboard → Run what-if now
-6. Open the run and read field diffs
-7. Type `WRITE` and Force live sync only after that plan is correct
-8. Turn what-if off when the 30-minute job should write
+5. Teams → Suggest matches → save. Aquira custom attribute default name is `HubSpot Team` (override with `AQUIRA_TEAM_ATTRIBUTE`); its value must be the exact HubSpot team name.
+6. Dashboard → Run what-if now
+7. Open the run and read field diffs
+8. Type `WRITE` and Force live sync only after that plan is correct
+9. Turn what-if off when the 30-minute job should write
 
 `/health` is the container healthcheck. `/ready` always returns HTTP 200 for process liveness and includes `aquira_configured` / `hubspot_configured` flags.
 

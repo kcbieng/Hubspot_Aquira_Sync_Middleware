@@ -4,8 +4,8 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.api.routes import aquira_owners, hubspot_owners, owner_map
-from app.db.models import OwnerMap
+from app.api.routes import aquira_owners, hubspot_owners, hubspot_teams, owner_map, team_map
+from app.db.models import OwnerMap, TeamMap
 from app.db.repo import Repo
 from app.runtime import persist_settings
 from app.session import is_logged_in, set_session
@@ -129,6 +129,7 @@ async def update_settings(request: Request):
             "sync_calls": str(form.get("sync_calls", "false")).lower() in {"1", "true", "on", "yes"},
             "sync_create_aquira_client": str(form.get("sync_create_aquira_client", "false")).lower() in {"1", "true", "on", "yes"},
             "bootstrap_hubspot": str(form.get("bootstrap_hubspot", "false")).lower() in {"1", "true", "on", "yes"},
+            "aquira_team_attribute": form.get("aquira_team_attribute") or "HubSpot Team",
         }
         try:
             payload["sync_interval_minutes"] = int(payload["sync_interval_minutes"] or 30)
@@ -198,6 +199,59 @@ async def owners_save(request: Request):
         repo.session.add(row)
     repo.session.commit()
     return RedirectResponse(url="/ui/owners", status_code=303)
+
+
+@router.get("/teams", response_class=HTMLResponse)
+def teams_page(request: Request):
+    redirect = _require_login(request)
+    if redirect:
+        return redirect
+    repo = Repo()
+    rows = repo.list_team_maps()
+    if not rows:
+        try:
+            team_map()
+            rows = repo.list_team_maps()
+        except Exception:
+            rows = []
+    return _page(
+        request,
+        "teams.html",
+        {
+            "rows": rows,
+            "hubspot_teams": hubspot_teams(),
+            "attribute_name": get_settings().aquira_team_attribute or "HubSpot Team",
+        },
+    )
+
+
+@router.post("/teams")
+async def teams_save(request: Request):
+    redirect = _require_login(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    repo = Repo()
+    action = str(form.get("action") or "save")
+    if action == "suggest":
+        team_map()
+        return RedirectResponse(url="/ui/teams", status_code=303)
+    aquira_keys = form.getlist("aquira_key")
+    teams = hubspot_teams()
+    for aquira_key in aquira_keys:
+        team_id = str(form.get(f"hubspot_team_id_{aquira_key}") or "") or None
+        enabled = str(form.get(f"enabled_{aquira_key}") or "") in {"1", "on", "true"}
+        row = repo.session.get(TeamMap, str(aquira_key))
+        if row is None:
+            continue
+        hubspot = next((item for item in teams if str(item.get("id")) == str(team_id or "")), None)
+        row.hubspot_team_id = team_id
+        row.hubspot_team_name = (hubspot or {}).get("name")
+        row.enabled = enabled and bool(team_id)
+        row.suggested = False
+        repo.session.add(row)
+    repo.session.commit()
+    return RedirectResponse(url="/ui/teams", status_code=303)
 
 
 @router.get("/runs", response_class=HTMLResponse)
