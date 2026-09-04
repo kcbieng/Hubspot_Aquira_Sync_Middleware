@@ -49,9 +49,9 @@ In production (`ENVIRONMENT=production`) `/api/*` and `/sync/*` require the same
 
 Postgres is not published to the host. Only the middleware port is.
 
-HubSpot webhook URL: `https://<your-host>/webhooks/hubspot`. Subscribe to `company.propertyChange`, `contact.propertyChange`, and `company.creation`.
+HubSpot webhook URL: `https://<your-host>/webhooks/hubspot`. Subscribe to `company.propertyChange`, `contact.propertyChange`, and `company.creation`. HubSpot signs the POST; HubQuira verifies `X-HubSpot-Signature-v3` with `HUBSPOT_CLIENT_SECRET` and queues an identity writeback. It does not run the catalog pull on the webhook thread.
 
-Aquira notification URL: `https://<your-host>/webhooks/aquira?token=<AQUIRA_WEBHOOK_SECRET>`. Point every Aquira notification type at that URL (GET/POST/PUT). The first deliveries show up on **Logs** as `Aquira notification accepted` with the raw body. If a contract or proposal id is present, HubQuira syncs that deal immediately.
+Aquira notification URL: `https://<your-host>/webhooks/aquira?token=<AQUIRA_WEBHOOK_SECRET>`. Point every Aquira notification type at that URL (GET/POST/PUT). Deliveries are logged and queued on a background worker so the operator UI stays up during a sync.
 
 ## Local development
 

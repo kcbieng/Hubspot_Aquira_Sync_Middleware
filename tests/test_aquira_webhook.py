@@ -44,7 +44,7 @@ def test_aquira_webhook_requires_token_when_configured():
     try:
         denied = client.post("/webhooks/aquira", json={"ContractID": 1})
         assert denied.status_code == 401
-        with patch("app.webhooks.routes.kick_aquira_sync") as kick:
+        with patch("app.webhooks.routes.enqueue_aquira_notification") as kick:
             accepted = client.post(
                 "/webhooks/aquira?token=s3cret",
                 json={"ContractID": 9404, "Event": "spotlines modified", "nonce": "token-check"},

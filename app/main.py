@@ -35,6 +35,9 @@ async def lifespan(_: FastAPI):
     global poll_job
     _configure_logging()
     apply_db_overlay()
+    from app.sync.worker import start_worker
+
+    start_worker()
     settings = get_settings()
     scheduler = BackgroundScheduler(timezone=settings.timezone)
     scheduler.start()
@@ -111,6 +114,8 @@ def metrics() -> dict[str, object]:
     try:
         latest = repo.latest_run()
         cursor = repo.get_cursor("poll")
+        from app.sync.worker import is_busy, queue_size
+
         return {
             "service": settings.app_name,
             "whatif": settings.whatif,
@@ -120,7 +125,8 @@ def metrics() -> dict[str, object]:
             "last_run_status": latest.status if latest else None,
             "last_success_at": cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None,
             "last_error": cursor.last_error if cursor else None,
-            "running": bool(poll_job and poll_job.orchestrator._active) if poll_job else False,
+            "running": is_busy(),
+            "queue": queue_size(),
         }
     finally:
         repo.close()

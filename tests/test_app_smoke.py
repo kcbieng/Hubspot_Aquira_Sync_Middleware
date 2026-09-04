@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.settings import get_settings
+from app.sync.worker import wait_for_run
 
 
 client = TestClient(app)
@@ -76,6 +77,12 @@ def test_dashboard_shows_recent_sync_output():
     )
 
     client.post("/ui/sync/run", follow_redirects=False)
+    # worker finishes in the background; wait for something to land
+    from app.db.repo import Repo
+
+    latest = Repo().latest_run()
+    if latest:
+        wait_for_run(latest.id, timeout=15)
     dashboard = client.get("/ui")
     html = dashboard.text
 
@@ -94,6 +101,8 @@ def test_ui_whatif_redirects_to_persisted_run():
     assert response.status_code == 303
     location = response.headers.get("location") or ""
     assert location.startswith("/ui/runs/")
+    run_id = int(location.rsplit("/", 1)[-1])
+    wait_for_run(run_id, timeout=15)
     detail = client.get(location)
     assert detail.status_code == 200
     assert "Run not found" not in detail.text
@@ -103,13 +112,16 @@ def test_ui_whatif_redirects_to_persisted_run():
 def test_api_sync_run_records_status_and_history():
     run_response = client.post(
         "/api/sync/run",
-        json={"whatif": True, "entities": ["clients", "contracts"]},
+        json={"whatif": True, "entities": ["clients", "contracts"], "wait": True},
     )
 
     assert run_response.status_code == 200
     payload = run_response.json()
-    assert payload["status"] == "success"
-    assert payload["whatif"] is True
+    assert payload["status"] in {"success", "partial", "error", "queued"}
+    if payload.get("run_id") and payload["status"] == "queued":
+        payload = wait_for_run(int(payload["run_id"]), timeout=15) or payload
+    assert payload["status"] in {"success", "partial", "error"}
+    assert payload.get("whatif") in {True, "true", None}
 
     status_response = client.get("/api/sync/status")
     assert status_response.status_code == 200

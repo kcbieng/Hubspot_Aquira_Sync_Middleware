@@ -1,5 +1,8 @@
 {% extends "base.html" %}
 {% block content %}
+  {% if run and run.status in ['queued', 'running', 'pending'] %}
+    <meta http-equiv="refresh" content="2">
+  {% endif %}
   <div class="panel-card p-4 p-md-5 mb-4">
     {% if run %}
       <div class="page-header">
@@ -14,6 +17,9 @@
       </div>
 
       <p class="text-muted mb-3">Trigger: {{ run.trigger }} • Started: {{ run.started_at }} • Finished: {{ run.finished_at }}</p>
+      {% if run.status in ['queued', 'running', 'pending'] %}
+        <div class="alert alert-info">Sync is {{ run.status }}. This page refreshes every 2 seconds. The operator console stays usable while the worker runs.</div>
+      {% endif %}
       {% if run.summary_json %}<pre>{{ run.summary_json }}</pre>{% endif %}
       {% if parsed %}
         <div class="vstack gap-3">
@@ -54,7 +60,7 @@
           {% endfor %}
         </div>
       {% else %}
-        <p class="text-muted mb-0">No run items recorded.</p>
+        <p class="text-muted mb-0">{{ 'Waiting for the worker…' if run.status in ['queued', 'running', 'pending'] else 'No run items recorded.' }}</p>
       {% endif %}
     {% else %}
       <h2 class="mb-3">Run not found</h2>

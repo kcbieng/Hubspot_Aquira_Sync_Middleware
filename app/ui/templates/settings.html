@@ -39,7 +39,7 @@
       <div class="col-md-6">
         <label class="form-label" for="aquira_webhook_secret">Aquira webhook token</label>
         <input class="form-control" id="aquira_webhook_secret" name="aquira_webhook_secret" type="password" placeholder="unchanged if blank" value="">
-        <div class="form-text">Optional shared token. Point Aquira at <code>{{ settings.public_base_url or 'https://your-host' }}/webhooks/aquira?token=...</code>. The first payloads are logged on <a href="/ui/logs">Logs</a> so we can see the real format.</div>
+        <div class="form-text">HubSpot webhook: <code>{{ settings.public_base_url or 'https://your-host' }}/webhooks/hubspot</code> (signature required). Aquira notifications: <code>{{ settings.public_base_url or 'https://your-host' }}/webhooks/aquira?token=...</code>. Both enqueue work; they do not wait for the catalog pull.</div>
       </div>
       <div class="col-md-6">
         <label class="form-label" for="aquira_team_attribute">Aquira team attribute name</label>

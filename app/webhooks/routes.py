@@ -4,8 +4,9 @@ import logging
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 
 from app.settings import get_settings
-from app.webhooks.aquira import extract_notification, kick_aquira_sync, message_id_for, parse_body
-from app.webhooks.hubspot import normalize_events, process_hubspot_identity_events, verify_request_signature
+from app.webhooks.aquira import extract_notification, message_id_for, parse_body
+from app.sync.worker import enqueue_aquira_notification, enqueue_hubspot_identity
+from app.webhooks.hubspot import normalize_events, verify_request_signature
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -80,7 +81,7 @@ async def aquira_webhook(
         return {"status": "ok", "service": "HubQuira", "hint": "POST Aquira notifications to this URL"}
 
     if not duplicate and (extracted.get("ids") or extracted.get("contract_cds")):
-        kick_aquira_sync(extracted, whatif=bool(settings.whatif))
+        enqueue_aquira_notification(extracted, whatif=bool(settings.whatif))
 
     return {
         "status": "duplicate" if duplicate else "accepted",
@@ -135,10 +136,11 @@ async def hubspot_webhook(
         if message_id:
             _SEEN_MESSAGE_IDS.add(message_id)
 
-    processed = process_hubspot_identity_events(events)
+    processed = enqueue_hubspot_identity(events)
     return {
         "status": "accepted",
         "payload_bytes": str(len(payload)),
-        "processed": processed.get("processed", 0),
+        "processed": processed.get("events", 0),
+        "queued": True,
         "messageId": message_id,
     }

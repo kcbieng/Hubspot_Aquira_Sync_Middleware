@@ -33,25 +33,19 @@ class PollJob:
         job.reschedule("interval", minutes=max(int(interval_minutes), 1))
 
     def run(self) -> dict[str, Any]:
-        from app.db.repo import Repo
+        from app.sync.worker import enqueue_sync, is_busy
 
         settings = get_settings()
-        repo = Repo()
-        try:
-            result = self.orchestrator.run(
-                SyncContext(trigger="schedule", whatif=bool(settings.whatif)),
-                repo=repo,
-            )
-            return result
-        except Exception as exc:
-            repo.add_event("poll", "ERROR", f"scheduled sync failed: {exc}")
-            return {
-                "status": "error",
-                "message": str(exc),
-                "timestamp": datetime.utcnow().isoformat(),
-            }
-        finally:
-            repo.close()
+        if is_busy():
+            from app.db.repo import Repo
+
+            repo = Repo()
+            try:
+                repo.add_event("poll", "INFO", "scheduled sync skipped; worker is busy")
+            finally:
+                repo.close()
+            return {"status": "skipped", "reason": "busy"}
+        return enqueue_sync(SyncContext(trigger="schedule", whatif=bool(settings.whatif)))
 
 
 _active_job: PollJob | None = None

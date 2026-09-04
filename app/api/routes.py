@@ -11,11 +11,10 @@ from app.mapping.teams import collect_team_keys, suggest_team_map, team_attribut
 from app.runtime import mask_secret, persist_settings
 from app.session import clear_session, set_session
 from app.settings import get_settings
-from app.sync.orchestrator import SyncContext, SyncOrchestrator
-from app.sync.whatif import SyncInProgress
+from app.sync.orchestrator import SyncContext
+from app.sync.worker import enqueue_sync, is_busy, queue_size, wait_for_run
 
 router = APIRouter(prefix="/api", tags=["api"])
-_orchestrator = SyncOrchestrator()
 
 
 def _public_settings() -> dict[str, object]:
@@ -93,7 +92,8 @@ def sync_status_stub() -> dict[str, object]:
         "status": latest.status if latest else "ok",
         "message": "sync status ready",
         "whatif": effective_whatif,
-        "running": _orchestrator._active,
+        "running": is_busy(),
+        "queue": queue_size(),
         "last_started": latest.started_at.isoformat() if latest and latest.started_at else None,
         "last_finished": latest.finished_at.isoformat() if latest and latest.finished_at else None,
         "last_success_at": cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None,
@@ -107,19 +107,19 @@ def _run_sync_now(payload: dict[str, object] | None = None, trigger: str = "manu
     whatif = bool(body.get("whatif", settings.whatif))
     entities = body.get("entities")
     aquira_id = body.get("aquira_id") or body.get("aquiraId")
-    try:
-        result = _orchestrator.run(
-            SyncContext(
-                trigger=str(body.get("trigger") or trigger),
-                whatif=whatif,
-                entities=list(entities) if entities else None,
-                aquira_id=str(aquira_id) if aquira_id else None,
-            ),
-            repo=Repo(),
+    result = enqueue_sync(
+        SyncContext(
+            trigger=str(body.get("trigger") or trigger),
+            whatif=whatif,
+            entities=list(entities) if entities else None,
+            aquira_id=str(aquira_id) if aquira_id else None,
         )
-        return result
-    except SyncInProgress as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    )
+    if body.get("wait"):
+        finished = wait_for_run(int(result["run_id"]), timeout=float(body.get("wait_timeout") or 60))
+        if finished:
+            return finished
+    return result
 
 
 @router.post("/sync/run")

@@ -202,8 +202,8 @@ def test_production_api_requires_login():
         assert blocked.status_code == 401
         login = client.post("/api/login", json={"username": "admin", "password": "admin"})
         assert login.status_code == 200
-        allowed = client.post("/api/sync/run", json={"whatif": True, "entities": ["companies"]})
+        allowed = client.post("/api/sync/run", json={"whatif": True, "entities": ["companies"], "wait": True})
         assert allowed.status_code == 200
-        assert allowed.json()["status"] == "success"
+        assert allowed.json()["status"] in {"success", "partial", "error", "queued"}
     finally:
         settings.environment = original

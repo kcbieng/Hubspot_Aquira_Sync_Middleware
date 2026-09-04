@@ -13,6 +13,8 @@ if _url.startswith("sqlite"):
     _engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
     _engine_kwargs["pool_recycle"] = 1800
+    _engine_kwargs["pool_size"] = 10
+    _engine_kwargs["max_overflow"] = 20
 engine = create_engine(_url, **_engine_kwargs)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 

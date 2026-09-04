@@ -429,6 +429,7 @@ class SyncOrchestrator:
         hubspot: Any | None = None,
         catalog: dict[str, list[dict[str, Any]]] | None = None,
         existing: dict[str, list[dict[str, Any]]] | None = None,
+        run_id: int | None = None,
     ) -> dict[str, Any]:
         self.acquire_lock()
         owned_repo = repo is None
@@ -438,7 +439,16 @@ class SyncOrchestrator:
             repo = Repo()
         started_at = datetime.utcnow()
         entities = self._normalize_entities(context)
-        run = repo.add_run(context.trigger, context.whatif, status="running")
+        run = None
+        if run_id:
+            run = repo.get_run(run_id)
+        if run is None:
+            run = repo.add_run(context.trigger, context.whatif, status="running")
+        else:
+            run.status = "running"
+            run.started_at = started_at
+            if hasattr(repo, "session"):
+                repo.session.commit()
         repo.add_event(
             "sync",
             "INFO",

@@ -10,7 +10,6 @@ from app.db.repo import Repo
 from app.runtime import persist_settings
 from app.session import is_logged_in, set_session
 from app.settings import get_settings
-from app.sync.orchestrator import SyncContext, SyncOrchestrator
 from app.version import REVISION
 
 router = APIRouter(prefix="/ui", tags=["ui"])
@@ -295,16 +294,10 @@ def logs_page(request: Request):
 
 
 def _execute_sync(whatif: bool, trigger: str = "manual", aquira_id: str | None = None) -> RedirectResponse:
-    from app.db.repo import Repo
+    from app.sync.orchestrator import SyncContext
+    from app.sync.worker import enqueue_sync
 
-    repo = Repo()
-    try:
-        result = SyncOrchestrator().run(
-            SyncContext(trigger=trigger, whatif=whatif, aquira_id=aquira_id or None),
-            repo=repo,
-        )
-    finally:
-        repo.close()
+    result = enqueue_sync(SyncContext(trigger=trigger, whatif=whatif, aquira_id=aquira_id or None))
     run_id = result.get("run_id")
     if run_id:
         return RedirectResponse(url=f"/ui/runs/{run_id}", status_code=303)
@@ -341,7 +334,4 @@ async def run_sync(request: Request):
     else:
         whatif = settings.whatif
     aquira_id = str(form.get("aquira_id") or "") or None
-    try:
-        return _execute_sync(whatif=whatif, trigger="manual", aquira_id=aquira_id)
-    except SyncInProgress:
-        return RedirectResponse(url="/ui", status_code=303)
+    return _execute_sync(whatif=whatif, trigger="manual", aquira_id=aquira_id)
