@@ -1,1 +1,1 @@
-"""Aquira ↔ HubSpot middleware application package."""
+"""HubQuira — Aquira ↔ HubSpot sync application."""

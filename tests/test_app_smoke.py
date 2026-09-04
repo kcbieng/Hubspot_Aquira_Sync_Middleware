@@ -13,6 +13,7 @@ def test_app_health_and_ready_endpoints():
 
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+    assert health.json()["service"] == "HubQuira"
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
 
@@ -41,6 +42,7 @@ def test_dashboard_has_live_runtime_controls():
     dashboard = client.get("/ui")
     assert dashboard.status_code == 200
     html = dashboard.text
+    assert "HubQuira" in html
     assert 'name="whatif"' in html
     assert 'name="sync_interval_minutes"' in html
     assert 'Run sync' in html

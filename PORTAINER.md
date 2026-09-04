@@ -1,4 +1,4 @@
-# Portainer deploy
+# HubQuira Portainer deploy
 
 This stack is meant to be deployed from GitHub with Portainer **Stacks → Add stack → Repository**.
 

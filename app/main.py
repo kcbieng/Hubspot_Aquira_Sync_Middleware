@@ -48,7 +48,7 @@ async def lifespan(_: FastAPI):
         scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="Aquira HubSpot Middleware", lifespan=lifespan)
+app = FastAPI(title="HubQuira", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(ui_router)
 app.include_router(webhook_router)

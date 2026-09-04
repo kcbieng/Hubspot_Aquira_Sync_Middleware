@@ -1,4 +1,4 @@
-# Aquira ↔ HubSpot Middleware
+# HubQuira
 
 Production middleware that syncs RCS Aquira radio traffic into HubSpot CRM: accounts vs advertisers, contacts, booked/proposal deals, and monthly expected revenue. HubSpot is source of truth for identity fields and writes those back to Aquira.
 

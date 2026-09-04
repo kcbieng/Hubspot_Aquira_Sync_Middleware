@@ -13,7 +13,7 @@ class Settings(BaseSettings):
         protected_namespaces=("model_",),
     )
 
-    app_name: str = "aquira_hubspot_middleware"
+    app_name: str = "HubQuira"
     environment: str = "development"
     log_level: str = "INFO"
     timezone: str = "America/Chicago"

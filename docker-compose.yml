@@ -48,6 +48,7 @@ services:
       BOOTSTRAP_HUBSPOT: ${BOOTSTRAP_HUBSPOT:-true}
       AQUIRA_TEAM_ATTRIBUTE: ${AQUIRA_TEAM_ATTRIBUTE:-HubSpot Team}
       ENVIRONMENT: ${ENVIRONMENT:-production}
+      APP_NAME: ${APP_NAME:-HubQuira}
     volumes:
       - app_logs:/var/log/aquira
     healthcheck:
