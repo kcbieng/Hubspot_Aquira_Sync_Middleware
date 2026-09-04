@@ -156,6 +156,7 @@ class HubSpotClient:
         self.revenue_object_type = "revenue_period"
         self.portal_id: str | None = None
         self._association_cache: dict[str, dict[str, Any]] = {}
+        self._prop_names: dict[str, set[str]] = {}
 
     def headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -370,6 +371,78 @@ class HubSpotClient:
             if not after:
                 break
         return {"results": results}
+
+    def property_group_name(self, object_type: str) -> str:
+        if object_type in OBJECT_GROUPS:
+            return OBJECT_GROUPS[object_type]
+        try:
+            payload = self._request("GET", f"/crm/v3/properties/{object_type}/groups")
+            for row in payload.get("results") or []:
+                name = row.get("name")
+                if name and not row.get("archived"):
+                    return str(name)
+        except Exception as exc:
+            logger.debug("HubSpot property groups for %s: %s", object_type, exc)
+        return "revenue_period_information"
+
+    def known_property_names(self, object_type: str) -> set[str]:
+        cached = self._prop_names.get(object_type)
+        if cached is not None:
+            return cached
+        try:
+            names = {str(item.get("name")) for item in (self.get_properties(object_type).get("results") or []) if item.get("name")}
+        except Exception as exc:
+            logger.warning("Could not list HubSpot %s properties: %s", object_type, exc)
+            names = set()
+        self._prop_names[object_type] = names
+        return names
+
+    def _create_defined_property(self, object_type: str, definition: dict[str, Any]) -> bool:
+        body = dict(definition)
+        body.setdefault("groupName", self.property_group_name(object_type))
+        try:
+            self._request("POST", f"/crm/v3/properties/{object_type}", json=body)
+            self._prop_names.setdefault(object_type, set()).add(str(definition["name"]))
+            return True
+        except HubSpotApiError as exc:
+            logger.warning(
+                "HubSpot property create %s.%s failed (HTTP %s): %s",
+                object_type,
+                definition.get("name"),
+                exc.status,
+                (exc.body or "")[:400],
+            )
+            if body.get("hasUniqueValue"):
+                body = dict(body)
+                body.pop("hasUniqueValue", None)
+                try:
+                    self._request("POST", f"/crm/v3/properties/{object_type}", json=body)
+                    self._prop_names.setdefault(object_type, set()).add(str(definition["name"]))
+                    return True
+                except HubSpotApiError:
+                    return False
+            return exc.status in {409}
+        except Exception as exc:
+            logger.warning("HubSpot property create %s.%s failed: %s", object_type, definition.get("name"), exc)
+            return False
+
+    def prepare_properties(self, object_type: str, properties: dict[str, Any]) -> dict[str, Any]:
+        known = set(self.known_property_names(object_type))
+        catalog = {item["name"]: item for item in [*COMPANY_PROPS, *CONTACT_PROPS, *DEAL_PROPS, *REVENUE_PROPS]}
+        missing = [name for name in properties if name not in known]
+        for name in missing:
+            definition = catalog.get(name) or {
+                "name": name,
+                "label": name.replace("_", " ").title(),
+                "type": "string",
+                "fieldType": "text",
+            }
+            if self._create_defined_property(object_type, definition):
+                known.add(name)
+        dropped = [name for name in properties if name not in known]
+        if dropped:
+            logger.warning("Dropping unknown HubSpot %s properties %s", object_type, dropped)
+        return {key: value for key, value in properties.items() if key in known}
 
     def create_property(
         self,
@@ -655,11 +728,12 @@ class HubSpotClient:
         return results
 
     def upsert_crm(self, object_type: str, properties: dict[str, Any], existing_id: str | None = None) -> dict[str, Any]:
+        properties = self.prepare_properties(object_type, properties)
         payload = {"properties": _stringify(properties)}
-        if existing_id:
-            updated = self._request("PATCH", f"/crm/v3/objects/{object_type}/{existing_id}", json=payload)
-            return {"id": str(updated.get("id") or existing_id), "properties": updated.get("properties") or payload["properties"]}
         try:
+            if existing_id:
+                updated = self._request("PATCH", f"/crm/v3/objects/{object_type}/{existing_id}", json=payload)
+                return {"id": str(updated.get("id") or existing_id), "properties": updated.get("properties") or payload["properties"]}
             created = self._request("POST", f"/crm/v3/objects/{object_type}", json=payload)
             return {"id": str(created.get("id")), "properties": created.get("properties") or payload["properties"]}
         except HubSpotApiError as err:
@@ -672,6 +746,11 @@ class HubSpotClient:
                 if found:
                     updated = self._request("PATCH", f"/crm/v3/objects/{object_type}/{found[0]['id']}", json=payload)
                     return {"id": str(updated.get("id") or found[0]["id"]), "properties": updated.get("properties") or payload["properties"]}
+            if err.status == 400 and "PROPERTY_DOESNT_EXIST" in (err.body or ""):
+                self._prop_names.pop(object_type, None)
+                trimmed = self.prepare_properties(object_type, properties)
+                if trimmed and trimmed != properties:
+                    return self.upsert_crm(object_type, trimmed, existing_id)
             raise
 
     def archive(self, object_type: str, ident: str) -> None:
@@ -772,17 +851,8 @@ class HubSpotClient:
             for definition in REVENUE_PROPS:
                 if definition["name"] in existing:
                     continue
-                try:
-                    self._request(
-                        "POST",
-                        f"/crm/v3/properties/{self.revenue_object_type}",
-                        json=definition,
-                    )
+                if self._create_defined_property(self.revenue_object_type, definition):
                     created.append(f"{self.revenue_object_type}.{definition['name']}")
-                except HubSpotApiError as exc:
-                    if exc.status in {400, 409}:
-                        continue
-                    warnings.append(f"Could not create revenue_period.{definition['name']}: {exc}")
         except Exception as exc:
             warnings.append(f"Revenue period schema unavailable: {exc}")
         return {"created": created, "warnings": warnings}

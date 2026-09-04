@@ -174,3 +174,55 @@ def test_hubspot_upsert_deal_creates_missing_record_and_associates_companies():
     assert post_mock.call_args_list[1].kwargs["json"]["properties"]["aquira_id"] == 9005
     assert post_mock.call_args_list[2].kwargs["json"]["inputs"][0]["to"]["id"] == "cmp-111"
     assert post_mock.call_args_list[3].kwargs["json"]["inputs"][0]["to"]["id"] == "cmp-222"
+
+
+def test_upsert_crm_creates_missing_custom_object_properties_with_group():
+    client = HubSpotClient(access_token="token")
+    client.revenue_object_type = "2-68669284"
+
+    def fake_request(method, path, **kwargs):
+        if method == "GET" and path.endswith("/properties/2-68669284"):
+            return {"results": [{"name": "aquira_id"}, {"name": "amount"}, {"name": "period"}]}
+        if method == "GET" and path.endswith("/groups"):
+            return {"results": [{"name": "revenue_period_information"}]}
+        if method == "POST" and "/properties/" in path:
+            assert kwargs["json"]["name"] == "spot_amount"
+            assert kwargs["json"]["groupName"] == "revenue_period_information"
+            return {"name": kwargs["json"]["name"]}
+        if method == "POST" and path.endswith("/objects/2-68669284"):
+            assert "spot_amount" in kwargs["json"]["properties"]
+            return {"id": "rp-1", "properties": kwargs["json"]["properties"]}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    with patch.object(client, "_request", side_effect=fake_request):
+        result = client.upsert_crm(
+            "2-68669284",
+            {"aquira_id": "56:2026-01:0", "amount": 100, "period": "2026-01-01", "spot_amount": 100},
+        )
+    assert result["id"] == "rp-1"
+
+
+def test_upsert_crm_drops_unknown_properties_when_create_fails():
+    from app.hubspot.client import HubSpotApiError
+
+    client = HubSpotClient(access_token="token")
+
+    def fake_request(method, path, **kwargs):
+        if method == "GET" and "/properties/" in path and not path.endswith("/groups"):
+            return {"results": [{"name": "aquira_id"}, {"name": "amount"}, {"name": "period"}]}
+        if method == "GET" and path.endswith("/groups"):
+            return {"results": [{"name": "revenue_period_information"}]}
+        if method == "POST" and "/properties/" in path:
+            raise HubSpotApiError(400, "{}", "nope")
+        if method == "POST" and "/objects/" in path:
+            assert "spot_amount" not in kwargs["json"]["properties"]
+            assert "amount" in kwargs["json"]["properties"]
+            return {"id": "rp-2"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    with patch.object(client, "_request", side_effect=fake_request):
+        result = client.upsert_crm(
+            "2-68669284",
+            {"aquira_id": "56:2026-01:0", "amount": 100, "period": "2026-01-01", "spot_amount": 100},
+        )
+    assert result["id"] == "rp-2"

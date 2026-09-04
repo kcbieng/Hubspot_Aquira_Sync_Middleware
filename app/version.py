@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-split-worker"
+REVISION = "2026.09.04-revenue-props"
