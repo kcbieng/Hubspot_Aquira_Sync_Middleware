@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-q-tail-mark"
+REVISION = "2026.09.04-provided-mark"
