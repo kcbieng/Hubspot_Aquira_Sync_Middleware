@@ -68,7 +68,9 @@ services:
     image: cloudflare/cloudflared
     command: tunnel run
     environment:
-      - TUNNEL_TOKEN=${cloudflared_token}    
+      - TUNNEL_TOKEN=${cloudflared_token} 
+    networks:
+      - app-network
 
 volumes:
   postgres_data:
