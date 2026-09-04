@@ -177,7 +177,12 @@ class AquiraSessionClient:
     def try_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | None:
         try:
             return self.request(method, path, **kwargs)
-        except Exception:
+        except Exception as exc:
+            text = str(exc)
+            if "HTTP 5" in text or " 500" in text:
+                logger.warning("Aquira %s %s failed: %s", method, path, exc)
+            else:
+                logger.debug("Aquira %s %s skipped: %s", method, path, exc)
             return None
 
     def heartbeat(self) -> bool:
@@ -198,7 +203,7 @@ class AquiraSessionClient:
             return self.version or "ok"
 
     def load_client(self, client_id: str | int) -> dict[str, Any]:
-        payload = self.request("POST", f"/Client/Load/{client_id}", json={"name": "load"})
+        payload = self.request("POST", f"/Client/Load/{client_id}")
         client = normalize_client(payload) or {}
         if client and not client.get("Contacts"):
             contacts = self.lookup_contacts(client_id)
@@ -207,16 +212,19 @@ class AquiraSessionClient:
         return client
 
     def lookup_contacts(self, client_id: str | int) -> list[dict[str, Any]]:
+        ident = int(client_id) if str(client_id).isdigit() else 0
+        if ident <= 0:
+            return []
         payload = self.try_request(
             "POST",
             "/Client/LookupContacts",
-            json={"ClientID": int(client_id) if str(client_id).isdigit() else client_id, "SearchTerm": ""},
+            json={"id": ident, "name": "lookup-contacts"},
         )
         if not payload:
             return []
         rows: list[dict[str, Any]] = []
         for row in list_from_envelope(payload):
-            contact = normalize_contact(row, int(client_id) if str(client_id).isdigit() else 0)
+            contact = normalize_contact(row, ident)
             if contact:
                 rows.append(contact)
         return rows

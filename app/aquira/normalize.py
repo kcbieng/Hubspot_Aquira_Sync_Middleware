@@ -222,19 +222,40 @@ def _party_flags(entity: dict[str, Any]) -> tuple[bool, bool]:
 
 def normalize_contact(payload: Any, fallback_client_id: int | None = None) -> dict[str, Any] | None:
     entity = entity_of(payload)
-    ident = entity.get("ID", entity.get("Id", entity.get("ContactID", entity.get("Key"))))
-    if ident is None or ident == "":
+    ident = _entity_get(entity, "ID", "Id", "ContactID", "Key")
+    if ident in (None, ""):
         return None
-    name = as_str(entity.get("Name"))
+    name = _entity_str(entity, "Name", "LongName")
     first_split, last_split = _split_name(name)
-    client_id = as_num(entity.get("ClientID", entity.get("AccountID")), fallback_client_id or 0)
+    client_id = as_num(
+        entity.get("ClientID") or entity.get("AccountID") or _ref_id(entity.get("Client")),
+        fallback_client_id or 0,
+    )
+    email = (
+        _entity_str(entity, "Email", "EmailAddress")
+        or as_str(entity.get("Email")).lower()
+        or as_str(entity.get("EmailAddress")).lower()
+    ).lower() or None
+    phone = (
+        _entity_str(
+            entity,
+            "Phone",
+            "BusinessPhone1",
+            "PersonalDirectDialPhone",
+            "PersonalMobilePhone",
+            "BusinessMobilePhone",
+            "Mobile",
+            "WorkPhone",
+        )
+        or None
+    )
     return {
         "ID": ident if isinstance(ident, (int, str)) else as_num(ident),
         "ClientID": int(client_id or 0),
-        "FirstName": as_str(entity.get("FirstName")) or first_split or "Unknown",
-        "LastName": as_str(entity.get("LastName")) or last_split,
-        "Email": as_str(entity.get("Email")).lower() or None,
-        "Phone": as_str(entity.get("Phone", entity.get("Mobile", entity.get("WorkPhone")))) or None,
+        "FirstName": _entity_str(entity, "FirstName") or first_split or "Unknown",
+        "LastName": _entity_str(entity, "LastName") or last_split,
+        "Email": email,
+        "Phone": phone,
     }
 
 
