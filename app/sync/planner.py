@@ -90,12 +90,14 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
 
 
 def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None) -> dict[str, Any]:
+    description = str(contract.get("Description") or "").strip()
     advertiser = advertiser_name or contract.get("Name") or "Contract"
+    label = description or advertiser
     cancelled = bool(contract.get("Cancelled"))
     is_contract = bool(contract.get("IsContract"))
     stage = "closedlost" if cancelled else "closedwon" if is_contract else "proposal"
     return {
-        "dealname": f"{contract.get('ContractCD')} — {advertiser}",
+        "dealname": f"{contract.get('ContractCD')} — {label}",
         "amount": contract.get("TotalValue") or 0,
         "closedate": contract.get("EndDate") or "",
         "pipeline": "default",

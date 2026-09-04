@@ -69,6 +69,27 @@ def test_plan_deals_uses_advertiser_name():
     assert items[0]["properties"]["dealstage"] == "closedwon"
 
 
+def test_plan_deals_prefers_contract_description_for_name():
+    contract = {
+        "ID": 49,
+        "ContractCD": "1070",
+        "Name": "Park Cities Baptist",
+        "Description": "Christmas 2025 — morning drive",
+        "IsProposal": False,
+        "IsContract": True,
+        "TotalValue": 12500,
+        "StartDate": "2026-01-01",
+        "EndDate": "2026-03-31",
+        "AccountID": 101,
+        "AdvertiserID": 202,
+        "SalesRepID": 7,
+        "Cancelled": False,
+        "lines": [],
+    }
+    items = plan_deals([contract], {}, {}, {"202": "Park Cities Baptist"})
+    assert items[0]["properties"]["dealname"] == "1070 — Christmas 2025 — morning drive"
+
+
 def test_plan_revenue_emits_monthly_periods_and_stale_deletes():
     contract = {
         "ID": 1,

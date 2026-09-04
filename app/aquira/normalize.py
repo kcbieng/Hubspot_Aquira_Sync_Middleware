@@ -351,8 +351,11 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
     sales_rep_id = _sales_rep_id(entity)
     advertiser_name = _ref_name(entity.get("Advertiser")) or as_str(entity.get("AdvertiserName"))
     contract_cd = as_str(entity.get("ContractCD", entity.get("ContractCode", entity.get("Code")))) or f"C-{ident}"
+    description = as_str(entity.get("Description")).strip() or None
     raw_name = as_str(entity.get("Name", entity.get("Title")))
-    if advertiser_name:
+    if description:
+        display_name = description
+    elif advertiser_name:
         display_name = advertiser_name
     elif raw_name and raw_name not in {str(int(ident)), contract_cd}:
         display_name = raw_name
@@ -398,6 +401,7 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         "ID": int(ident),
         "ContractCD": contract_cd,
         "Name": display_name,
+        "Description": description,
         "IsProposal": is_proposal,
         "IsContract": is_contract,
         "Cancelled": cancelled,

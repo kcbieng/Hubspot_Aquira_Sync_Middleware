@@ -9,6 +9,7 @@ def test_normalize_contract_load_nested_refs_and_summary():
             "ID": 49,
             "Name": "49",
             "ContractCD": {"Value": "1070"},
+            "Description": {"Value": "Christmas 2025 — morning drive"},
             "IsContract": {"Value": True},
             "IsProposal": {"Value": False},
             "Status": {"Value": 1},
@@ -45,7 +46,8 @@ def test_normalize_contract_load_nested_refs_and_summary():
     contract = normalize_contract(payload)
     assert contract["ID"] == 49
     assert contract["ContractCD"] == "1070"
-    assert contract["Name"] == "Park Cities Baptist"
+    assert contract["Description"] == "Christmas 2025 — morning drive"
+    assert contract["Name"] == "Christmas 2025 — morning drive"
     assert contract["AccountID"] == 101
     assert contract["AdvertiserID"] == 202
     assert contract["SalesRepID"] == 7
@@ -60,7 +62,7 @@ def test_normalize_contract_load_nested_refs_and_summary():
 
     items = plan_deals([contract], {}, {"7": "hs-owner"}, {"202": "Park Cities Baptist"})
     props = items[0]["properties"]
-    assert props["dealname"] == "1070 — Park Cities Baptist"
+    assert props["dealname"] == "1070 — Christmas 2025 — morning drive"
     assert props["amount"] == 12500
     assert props["aquira_account_id"] == "101"
     assert props["aquira_advertiser_id"] == "202"

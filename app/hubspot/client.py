@@ -418,7 +418,8 @@ class HubSpotClient:
         contract_cd = _unwrap(entity.get("ContractCD")) or _unwrap(entity.get("Name")) or ""
         is_proposal = bool(_unwrap(entity.get("IsProposal")) is True)
         is_contract = bool(_unwrap(entity.get("IsContract")) is True)
-        name = f"{contract_cd} — {_unwrap(entity.get('Name')) or 'Contract'}"
+        description = str(_unwrap(entity.get("Description")) or "").strip()
+        name = f"{contract_cd} — {description or _unwrap(entity.get('Name')) or 'Contract'}"
         properties = {
             "dealname": name,
             "amount": float(_unwrap(entity.get("TotalValue")) or 0),
