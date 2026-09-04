@@ -79,25 +79,68 @@ class AquiraSessionClient:
         self._retrying = False
 
     def login(self) -> dict[str, Any]:
-        if not self.username or not self.password:
+        user = (self.username or "").strip()
+        password = self.password or ""
+        if not user or not password:
             raise AquiraApiError("Aquira username and password are required.")
-        response = self.client.post("/Session/Post", json={"UserName": self.username, "Password": self.password})
-        try:
-            data = response.json()
-        except Exception as exc:
-            raise AquiraApiError(f"Aquira login returned non-JSON (HTTP {response.status_code})") from exc
-        if response.status_code >= 400 or data.get("Success") is False:
-            raise AquiraApiError(
-                data.get("ErrorText") or data.get("ErrorName") or f"Aquira login failed (HTTP {response.status_code})",
+        two_go = {
+            "Username": user,
+            "UserName": user,
+            "Password": password,
+            "IsAquira2GOLogin": True,
+            "WindowsLogin": False,
+            "PassThrough": False,
+            "name": "login",
+        }
+        payloads = [
+            two_go,
+            two_go,
+            {
+                "Username": user,
+                "UserName": user,
+                "Password": password,
+                "name": "login",
+            },
+        ]
+        last_error: AquiraApiError | None = None
+        for index, payload in enumerate(payloads):
+            if index:
+                try:
+                    self.client.delete("/Session/Delete")
+                except Exception:
+                    pass
+            response = self.client.post("/Session/Post", json=payload)
+            try:
+                data = response.json()
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            success = data.get("Success")
+            accepted = response.status_code < 400 and success is not False and (
+                success is True or bool(data.get("Entity") or data.get("SessionID"))
+            )
+            if accepted:
+                self.logged_in = True
+                entity = data.get("Entity") if isinstance(data.get("Entity"), dict) else {}
+                self.version = str(entity.get("WebApiVersion") or entity.get("AquiraVersion") or data.get("name") or "") or None
+                logger.info("Aquira session opened (version=%s)", self.version)
+                return data
+            last_error = AquiraApiError(
+                data.get("ErrorText")
+                or data.get("Errors")
+                or data.get("ErrorName")
+                or f"Aquira login failed (HTTP {response.status_code})",
                 error=data.get("Error"),
                 error_name=data.get("ErrorName"),
                 errors=data.get("Errors"),
             )
-        validate_response(data)
-        self.logged_in = True
-        entity = data.get("Entity") if isinstance(data.get("Entity"), dict) else {}
-        self.version = str(entity.get("WebApiVersion") or entity.get("AquiraVersion") or data.get("name") or "") or None
-        return data
+            logger.warning("Aquira login attempt %s failed: %s", index + 1, last_error)
+            try:
+                self.client.delete("/Session/Delete")
+            except Exception:
+                pass
+        raise last_error or AquiraApiError("Aquira login failed")
 
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         response = self.client.request(method, path, **kwargs)
