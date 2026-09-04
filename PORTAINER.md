@@ -16,9 +16,26 @@ If the repo is private, Portainer needs GitHub credentials:
 4. Username: your GitHub username  
    Password: the token (not your GitHub password)
 
-Portainer clones the repo on the Docker host and builds `Dockerfile`. The host must be able to reach GitHub and `https://api.hubapi.com` plus your Aquira WebAPI URL.
+Portainer clones the repo on the Docker host and **builds** `middleware` from `Dockerfile`. There is no image on Docker Hub. `docker pull` / Portainer **Re-pull image** will not pick up GitHub commits.
 
-After pushing to `main`, use **Pull and redeploy** with **Re-pull image** / **Rebuild** enabled. Cached `aquira-hubspot-middleware:latest` will keep serving the old parser. Confirm the Dashboard **Build** line matches the latest revision.
+## Updating after a GitHub push
+
+1. Portainer → Stacks → this stack
+2. **Pull and redeploy** (this git-pulls `main`)
+3. Enable **Re-build image** if the checkbox is shown. **Re-pull image** is for registry images and does nothing here.
+4. Enable **Force recreation of containers** / **Re-create containers** if present
+5. Open the operator Dashboard and confirm **Build** is `2026.09.04-client-fullname` (or newer)
+
+If the build line does not change, Portainer reused the old local image. On the Docker host:
+
+```bash
+# Portainer git stacks usually land under /data/compose/<stack-id>
+cd /data/compose/<stack-id>
+docker compose build --no-cache middleware
+docker compose up -d middleware
+```
+
+`docker-compose.yml` sets `pull_policy: build` so Compose builds from the Dockerfile instead of trying to pull `aquira-hubspot-middleware:latest`.
 
 ## Environment
 
