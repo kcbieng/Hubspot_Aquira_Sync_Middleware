@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-client-fullname"
+REVISION = "2026.09.04-persist-runs"

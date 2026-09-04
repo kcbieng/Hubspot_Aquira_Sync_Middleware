@@ -188,6 +188,7 @@ class AquiraSessionClient:
         get_all = self.try_request("GET", "/Client/Get")
         if get_all and list_from_envelope(get_all):
             payloads.append(get_all)
+            logger.info("Client/Get returned %s rows", len(list_from_envelope(get_all)))
         search = self.try_request(
             "POST",
             "/Client/Search",
@@ -346,6 +347,13 @@ class AquiraSessionClient:
         for client in loaded_clients:
             contacts.extend(client.get("Contacts") or [])
         reps = self.load_sales_reps()
+        logger.info(
+            "Aquira catalog ready: %s clients, %s contacts, %s contracts, %s reps",
+            len(loaded_clients),
+            len(contacts),
+            len(loaded_contracts),
+            len(reps),
+        )
         return {"clients": loaded_clients, "contacts": contacts, "contracts": loaded_contracts, "reps": reps}
 
     def update_client_sparse(self, aquira_id: str | int, fields: dict[str, Any]) -> dict[str, Any]:

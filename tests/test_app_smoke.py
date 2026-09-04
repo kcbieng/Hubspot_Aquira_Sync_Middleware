@@ -82,6 +82,22 @@ def test_dashboard_shows_recent_sync_output():
     assert "planned" in html.lower()
 
 
+def test_ui_whatif_redirects_to_persisted_run():
+    client.post(
+        "/ui/login",
+        data={"username": "admin", "password": "admin"},
+        follow_redirects=False,
+    )
+    response = client.post("/ui/sync/run", data={"whatif": "true"}, follow_redirects=False)
+    assert response.status_code == 303
+    location = response.headers.get("location") or ""
+    assert location.startswith("/ui/runs/")
+    detail = client.get(location)
+    assert detail.status_code == 200
+    assert "Run not found" not in detail.text
+    assert "Run #" in detail.text
+
+
 def test_api_sync_run_records_status_and_history():
     run_response = client.post(
         "/api/sync/run",

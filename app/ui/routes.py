@@ -240,9 +240,16 @@ def logs_page(request: Request):
 
 
 def _execute_sync(whatif: bool, trigger: str = "manual", aquira_id: str | None = None) -> RedirectResponse:
-    result = SyncOrchestrator().run(
-        SyncContext(trigger=trigger, whatif=whatif, aquira_id=aquira_id or None),
-    )
+    from app.db.repo import Repo
+
+    repo = Repo()
+    try:
+        result = SyncOrchestrator().run(
+            SyncContext(trigger=trigger, whatif=whatif, aquira_id=aquira_id or None),
+            repo=repo,
+        )
+    finally:
+        repo.close()
     run_id = result.get("run_id")
     if run_id:
         return RedirectResponse(url=f"/ui/runs/{run_id}", status_code=303)

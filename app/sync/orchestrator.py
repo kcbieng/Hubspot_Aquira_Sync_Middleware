@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -16,6 +17,8 @@ from app.sync.planner import (
     plan_revenue,
 )
 from app.sync.whatif import SyncInProgress
+
+logger = logging.getLogger(__name__)
 
 
 class _NoopRepo:
@@ -273,6 +276,7 @@ class SyncOrchestrator:
                     },
                 )
             except Exception as exc:
+                logger.exception("Aquira catalog pull failed")
                 warnings.append(f"Aquira pull failed: {exc}")
                 repo.add_event("sync", "ERROR", f"Aquira pull failed: {exc}")
 
@@ -403,7 +407,10 @@ class SyncOrchestrator:
     ) -> dict[str, Any]:
         self.acquire_lock()
         owned_repo = repo is None
-        repo = repo or _NoopRepo()
+        if repo is None:
+            from app.db.repo import Repo
+
+            repo = Repo()
         started_at = datetime.utcnow()
         entities = self._normalize_entities(context)
         run = repo.add_run(context.trigger, context.whatif, status="running")

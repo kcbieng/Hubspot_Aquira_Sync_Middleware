@@ -264,14 +264,18 @@ class HubSpotClient:
         return rows
 
     def get_properties(self, object_type: str) -> dict[str, Any]:
-        response = httpx.get(
-            f"{self.base_url}/crm/v3/properties/{object_type}",
-            headers=self.headers(),
-            params={"limit": 100},
-            timeout=30.0,
-        )
-        response.raise_for_status()
-        return response.json()
+        results: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            params: dict[str, Any] = {"limit": 100}
+            if after:
+                params["after"] = after
+            payload = self._request("GET", f"/crm/v3/properties/{object_type}", params=params)
+            results.extend(payload.get("results") or [])
+            after = ((payload.get("paging") or {}).get("next") or {}).get("after")
+            if not after:
+                break
+        return {"results": results}
 
     def create_property(
         self,
@@ -621,6 +625,10 @@ class HubSpotClient:
                         },
                     )
                     created.append(f"{object_type}.{definition['name']}")
+                except HubSpotApiError as exc:
+                    if exc.status in {400, 409}:
+                        continue
+                    warnings.append(f"Could not create {object_type}.{definition['name']}: {exc}")
                 except Exception as exc:
                     warnings.append(f"Could not create {object_type}.{definition['name']}: {exc}")
         try:
