@@ -70,3 +70,60 @@ def test_normalize_status_name_proposal():
     assert contract["IsProposal"] is True
     assert contract["IsContract"] is False
     assert contract["Name"] == "Proposal 12"
+
+
+def test_load_spot_lines_does_not_hit_path_id_endpoints():
+    client = AquiraSessionClient(base_url="https://example.test", username="svc", password="x")
+    seen: list[str] = []
+
+    def fake_request(method, path, **kwargs):
+        seen.append(path)
+        if path == "/Contract/GetSpotLineDetailAnalysis":
+            assert "json" in kwargs
+            assert kwargs["json"]["id"] == 257
+            return {"Success": True, "Data": {"Items": []}}
+        if path == "/Contract/LoadSpotline":
+            return {"Success": True, "SpotLine": {}}
+        raise AssertionError(f"unexpected path {path}")
+
+    with patch.object(client, "request", side_effect=fake_request):
+        client.load_spot_lines(257, loaded={"Entity": {"ID": 257}})
+
+    assert "/Contract/GetSpotLineDetailAnalysis/257" not in seen
+    assert "/Contract/LoadSpotline/257" not in seen
+    assert "/Contract/LoadSpotlineStationSpots" not in seen
+
+
+def test_load_contract_prefers_monthly_analysis():
+    client = AquiraSessionClient(base_url="https://example.test", username="svc", password="x")
+
+    def fake_request(method, path, **kwargs):
+        if path == "/Contract/Load/257":
+            return {
+                "Success": True,
+                "Entity": {"ID": 257, "ContractCD": {"Value": "1115"}, "IsContract": True, "TotalValue": 4500},
+            }
+        if path == "/Contract/GetContractDetailAnalysis":
+            return {
+                "Success": True,
+                "Data": {
+                    "Items": [
+                        {
+                            "StationShortName": "KCBI",
+                            "Year": 2026,
+                            "Month": 1,
+                            "SpotGrossAmount": 4000,
+                            "ChargeGrossAmount": 500,
+                            "NetAmount": 4500,
+                        }
+                    ]
+                },
+            }
+        raise AssertionError(f"unexpected path {path}")
+
+    with patch.object(client, "request", side_effect=fake_request):
+        contract = client.load_contract(257)
+
+    kinds = {line["line_kind"] for line in contract["lines"]}
+    assert kinds == {"spot", "charge"}
+    assert sum(line["amount"] for line in contract["lines"]) == 4500

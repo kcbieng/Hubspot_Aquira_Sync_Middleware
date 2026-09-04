@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 
@@ -562,6 +562,55 @@ def normalize_charge_lines(payload: Any) -> list[dict[str, Any]]:
                 "seconds_by_month": None,
             }
         )
+    return lines
+
+
+def _month_bounds(year: int, month: int) -> tuple[str, str]:
+    start = datetime(year, month, 1).date()
+    if month == 12:
+        end = datetime(year, 12, 31).date()
+    else:
+        end = (datetime(year, month + 1, 1) - timedelta(days=1)).date()
+    return start.isoformat(), end.isoformat()
+
+
+def normalize_revenue_months(payload: Any) -> list[dict[str, Any]]:
+    """Turn GetContractDetailAnalysis monthly items into spot/charge/other lines."""
+    root = as_record(unwrap_deep(payload))
+    data = as_record(root.get("Data") or root.get("Entity"))
+    items = as_array(data.get("Items") or root.get("Items") or data.get("Data"))
+    lines: list[dict[str, Any]] = []
+    for row in items:
+        item = as_record(unwrap_deep(row))
+        year = int(as_num(item.get("Year")))
+        month = int(as_num(item.get("Month")))
+        if year < 1990 or month < 1 or month > 12:
+            continue
+        start, end = _month_bounds(year, month)
+        station = as_str(item.get("StationShortName") or item.get("Station") or "ALL") or "ALL"
+        spot = float(as_num(item.get("SpotGrossAmount") or item.get("SpotNetAmount")))
+        charge = float(as_num(item.get("ChargeGrossAmount") or item.get("ChargeNetAmount")))
+        other = float(as_num(item.get("SponsorshipGrossAmount"))) + float(as_num(item.get("WebGrossAmount")))
+        net = float(as_num(item.get("NetAmount") or item.get("GrossAmount")))
+        parts = [("spot", spot), ("charge", charge), ("other", other)]
+        if net and not any(amount for _, amount in parts):
+            parts = [("spot", net)]
+        for kind, amount in parts:
+            if not amount:
+                continue
+            lines.append(
+                {
+                    "station_id": 0,
+                    "station": station,
+                    "start": start,
+                    "end": end,
+                    "amount": amount,
+                    "line_kind": kind,
+                    "products": [],
+                    "spots_by_month": None,
+                    "seconds_by_month": None,
+                }
+            )
     return lines
 
 

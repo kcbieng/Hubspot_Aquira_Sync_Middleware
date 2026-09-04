@@ -15,6 +15,7 @@ from app.aquira.normalize import (
     normalize_contact,
     normalize_contract,
     normalize_rep,
+    normalize_revenue_months,
     normalize_spot_lines,
     unwrap_deep,
 )
@@ -306,45 +307,46 @@ class AquiraSessionClient:
 
     def load_spot_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         from_load = normalize_spot_lines(loaded) if loaded else []
-        if from_load:
-            return from_load
+        ident = int(contract_id) if str(contract_id).isdigit() else contract_id
         attempts = [
-            ("POST", "/Contract/GetSpotLineDetailAnalysis", {"ContractID": int(contract_id) if str(contract_id).isdigit() else contract_id}),
-            ("POST", f"/Contract/GetSpotLineDetailAnalysis/{contract_id}", None),
-            ("POST", "/Contract/LoadSpotline", {"ContractID": int(contract_id) if str(contract_id).isdigit() else contract_id}),
-            ("POST", f"/Contract/LoadSpotline/{contract_id}", None),
-            ("POST", "/Contract/GetContractDetailAnalysis", {"ContractID": int(contract_id) if str(contract_id).isdigit() else contract_id}),
-            ("POST", "/Contract/LoadSpotlineStationSpots", {"ContractID": int(contract_id) if str(contract_id).isdigit() else contract_id}),
-        ]
-        for method, path, body in attempts:
-            payload = self.try_request(method, path, json=body) if body is not None else self.try_request(method, path)
-            if not payload:
-                continue
-            lines = normalize_spot_lines(payload)
-            if lines:
-                return lines
-        return []
-
-    def load_charge_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        charges = normalize_charge_lines(loaded) if loaded else []
-
-        if charges:
-            return charges
-        attempts = [
-            ("POST", "/Contract/GetContractDetailAnalysis", {"ContractID": int(contract_id) if str(contract_id).isdigit() else contract_id}),
-            ("POST", f"/Contract/Load/{contract_id}", {"name": "load"}),
+            ("POST", "/Contract/GetSpotLineDetailAnalysis", {"id": ident, "ID": ident, "name": "spot-lines"}),
+            ("POST", "/Contract/LoadSpotline", {"ContractID": ident, "name": "spotline"}),
         ]
         for method, path, body in attempts:
             payload = self.try_request(method, path, json=body)
             if not payload:
                 continue
-            charges = normalize_charge_lines(payload)
-            if charges:
-                return charges
-        return []
+            lines = normalize_spot_lines(payload)
+            if lines:
+                return lines
+        return from_load
+
+    def load_charge_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        charges = normalize_charge_lines(loaded) if loaded else []
+        if charges:
+            return charges
+        ident = int(contract_id) if str(contract_id).isdigit() else contract_id
+        payload = self.try_request(
+            "POST",
+            "/Contract/GetContractDetailAnalysis",
+            json={"ID": ident, "id": ident, "RevenueDateType": 0, "name": "detail"},
+        )
+        return normalize_charge_lines(payload) if payload else []
+
+    def load_revenue_months(self, contract_id: str | int) -> list[dict[str, Any]]:
+        ident = int(contract_id) if str(contract_id).isdigit() else contract_id
+        payload = self.try_request(
+            "POST",
+            "/Contract/GetContractDetailAnalysis",
+            json={"ID": ident, "id": ident, "RevenueDateType": 0, "name": "detail"},
+        )
+        return normalize_revenue_months(payload) if payload else []
 
     def load_contract(self, contract_id: str | int) -> dict[str, Any] | None:
         payload = self.request("POST", f"/Contract/Load/{contract_id}", json={"name": "load"})
+        months = self.load_revenue_months(contract_id)
+        if months:
+            return normalize_contract(payload, months)
         lines = self.load_spot_lines(contract_id, payload)
         charges = self.load_charge_lines(contract_id, payload)
         return normalize_contract(payload, [*lines, *charges])

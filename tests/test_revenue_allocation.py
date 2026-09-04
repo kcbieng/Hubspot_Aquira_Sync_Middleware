@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from app.aquira.normalize import normalize_charge_lines, normalize_contract
+from app.aquira.normalize import normalize_charge_lines, normalize_contract, normalize_revenue_months
 from app.mapping.revenue import allocate_revenue, summarize_allocation
 from app.sync.planner import deal_properties, plan_revenue
 
@@ -169,3 +169,52 @@ def test_normalize_charge_lines_unwraps_field_values():
     )
     assert contract["lines"][0]["line_kind"] == "charge"
     assert contract["lines"][0]["amount"] == 500
+
+
+def test_normalize_revenue_months_splits_spot_and_charge():
+    lines = normalize_revenue_months(
+        {
+            "Success": True,
+            "Data": {
+                "Items": [
+                    {
+                        "StationShortName": "KCBI",
+                        "Year": 2026,
+                        "Month": 1,
+                        "SpotGrossAmount": 4000,
+                        "ChargeGrossAmount": 500,
+                        "SponsorshipGrossAmount": 0,
+                        "WebGrossAmount": 0,
+                        "NetAmount": 4500,
+                    },
+                    {
+                        "StationShortName": "KCBI",
+                        "Year": 2026,
+                        "Month": 2,
+                        "SpotGrossAmount": 2500,
+                        "ChargeGrossAmount": 0,
+                        "NetAmount": 2500,
+                    },
+                ]
+            },
+        }
+    )
+    assert [(row["line_kind"], row["start"], row["amount"]) for row in lines] == [
+        ("spot", "2026-01-01", 4000.0),
+        ("charge", "2026-01-01", 500.0),
+        ("spot", "2026-02-01", 2500.0),
+    ]
+    periods = allocate_revenue(
+        {
+            "contract_id": 257,
+            "contract_cd": "1115",
+            "kind": "booked",
+            "lines": lines,
+        }
+    )
+    by_month = {row["period"]: row for row in periods}
+    assert by_month["2026-01-01"]["amount"] == 4500.0
+    assert by_month["2026-01-01"]["charge_amount"] == 500.0
+    summary = summarize_allocation({"TotalValue": 7000, "lines": lines}, periods)
+    assert summary["mismatch"] is False
+    assert summary["allocated_total"] == 7000.0

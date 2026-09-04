@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-aquira-webhooks"
+REVISION = "2026.09.04-spotline-endpoints"
