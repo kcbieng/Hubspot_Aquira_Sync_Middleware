@@ -8,6 +8,7 @@ from app.db.repo import Repo
 from app.hubspot.client import HubSpotClient
 from app.mapping.owners import suggest_owner_map
 from app.runtime import mask_secret, persist_settings
+from app.session import clear_session, set_session
 from app.settings import get_settings
 from app.sync.orchestrator import SyncContext, SyncOrchestrator
 from app.sync.whatif import SyncInProgress
@@ -45,14 +46,14 @@ def login(payload: dict[str, str]) -> JSONResponse:
     if username != settings.ui_username or password != settings.ui_password:
         raise HTTPException(status_code=401, detail="invalid credentials")
     response = JSONResponse({"ok": True, "username": username})
-    response.set_cookie("middleware_session", "authenticated", httponly=True, samesite="lax")
+    set_session(response)
     return response
 
 
 @router.post("/logout")
 def logout() -> JSONResponse:
     response = JSONResponse({"ok": True})
-    response.delete_cookie("middleware_session")
+    clear_session(response)
     return response
 
 
@@ -280,19 +281,29 @@ def owner_map() -> list[dict[str, object]]:
     hubspot_reps = hubspot_owners()
     suggestions = suggest_owner_map(aquira_reps, hubspot_reps)
     repo = Repo()
-    for suggestion in suggestions:
-        repo.session.merge(
-            OwnerMap(
-                aquira_user_id=str(suggestion["aquira_user_id"]),
-                aquira_name=suggestion.get("aquira_name"),
-                aquira_email=suggestion.get("aquira_email"),
-                hubspot_owner_id=suggestion.get("hubspot_owner_id"),
-                hubspot_name=suggestion.get("hubspot_name"),
-                hubspot_email=suggestion.get("hubspot_email"),
-                enabled=bool(suggestion.get("enabled")),
-                suggested=bool(suggestion.get("suggested")),
-                updated_at=datetime.utcnow(),
+    try:
+        for suggestion in suggestions:
+            aquira_id = str(suggestion.get("aquira_user_id"))
+            existing = repo.session.get(OwnerMap, aquira_id)
+            if existing is not None and not existing.suggested:
+                existing.aquira_name = suggestion.get("aquira_name") or existing.aquira_name
+                existing.aquira_email = suggestion.get("aquira_email") or existing.aquira_email
+                repo.session.add(existing)
+                continue
+            repo.session.merge(
+                OwnerMap(
+                    aquira_user_id=aquira_id,
+                    aquira_name=suggestion.get("aquira_name"),
+                    aquira_email=suggestion.get("aquira_email"),
+                    hubspot_owner_id=suggestion.get("hubspot_owner_id"),
+                    hubspot_name=suggestion.get("hubspot_name"),
+                    hubspot_email=suggestion.get("hubspot_email"),
+                    enabled=bool(suggestion.get("enabled")),
+                    suggested=bool(suggestion.get("suggested")),
+                    updated_at=datetime.utcnow(),
+                )
             )
-        )
-    repo.session.commit()
+        repo.session.commit()
+    finally:
+        repo.close()
     return suggestions

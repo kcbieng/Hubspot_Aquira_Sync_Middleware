@@ -5,9 +5,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.api.routes import aquira_owners, hubspot_owners, owner_map
-from app.db.models import JobEvent, OwnerMap
+from app.db.models import OwnerMap
 from app.db.repo import Repo
 from app.runtime import persist_settings
+from app.session import is_logged_in, set_session
 from app.settings import get_settings
 from app.sync.orchestrator import SyncContext, SyncOrchestrator
 from app.sync.whatif import SyncInProgress
@@ -17,9 +18,14 @@ templates = Jinja2Templates(directory="app/ui/templates")
 
 
 def _require_login(request: Request):
-    if not request.cookies.get("middleware_session"):
+    if not is_logged_in(request):
         return RedirectResponse(url="/ui/login", status_code=303)
     return None
+
+
+def _page(request: Request, name: str, context: dict):
+    context.setdefault("settings", get_settings())
+    return templates.TemplateResponse(request, name, context)
 
 
 def _latest_sync_output() -> dict[str, object]:
@@ -52,7 +58,7 @@ def _latest_sync_output() -> dict[str, object]:
 
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request, "settings": get_settings(), "error": None})
+    return _page(request, "login.html", {"error": None})
 
 
 @router.post("/login")
@@ -63,9 +69,9 @@ async def login_submit(request: Request):
     settings = get_settings()
     if username == settings.ui_username and password == settings.ui_password:
         response = RedirectResponse(url="/ui", status_code=303)
-        response.set_cookie("middleware_session", "authenticated", httponly=True, samesite="lax")
+        set_session(response)
         return response
-    return templates.TemplateResponse("login.html", {"request": request, "settings": settings, "error": "Invalid credentials"})
+    return _page(request, "login.html", {"error": "Invalid credentials"})
 
 
 @router.get("", response_class=HTMLResponse)
@@ -77,11 +83,10 @@ def dashboard(request: Request):
     repo = Repo()
     cursor = repo.get_cursor("poll")
     latest = repo.latest_run()
-    return templates.TemplateResponse(
+    return _page(
+        request,
         "dashboard.html",
         {
-            "request": request,
-            "settings": settings,
             "mode_label": "PLAN ONLY — no writes" if settings.whatif else "LIVE WRITES",
             "status": "ready",
             "recent_sync_output": _latest_sync_output(),
@@ -99,10 +104,7 @@ def settings_page(request: Request):
     redirect = _require_login(request)
     if redirect:
         return redirect
-    return templates.TemplateResponse(
-        "settings.html",
-        {"request": request, "settings": get_settings(), "error": None, "notice": None},
-    )
+    return _page(request, "settings.html", {"error": None, "notice": None})
 
 
 @router.post("/settings")
@@ -157,11 +159,10 @@ def owners_page(request: Request):
             rows = repo.list_owner_maps()
         except Exception:
             rows = []
-    return templates.TemplateResponse(
+    return _page(
+        request,
         "owners.html",
         {
-            "request": request,
-            "settings": get_settings(),
             "rows": rows,
             "aquira_reps": aquira_owners(),
             "hubspot_owners": hubspot_owners(),
@@ -204,7 +205,7 @@ def runs_page(request: Request):
     if redirect:
         return redirect
     repo = Repo()
-    return templates.TemplateResponse("runs.html", {"request": request, "settings": get_settings(), "runs": repo.list_runs(50)})
+    return _page(request, "runs.html", {"runs": repo.list_runs(50)})
 
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -224,10 +225,7 @@ def run_detail_page(request: Request, run_id: int):
             except json.JSONDecodeError:
                 diff = {"raw": item.diff_json}
         parsed.append({"row": item, "diff": diff})
-    return templates.TemplateResponse(
-        "run_detail.html",
-        {"request": request, "settings": get_settings(), "run": run, "items": items, "parsed": parsed},
-    )
+    return _page(request, "run_detail.html", {"run": run, "items": items, "parsed": parsed})
 
 
 @router.get("/logs", response_class=HTMLResponse)
@@ -237,13 +235,12 @@ def logs_page(request: Request):
         return redirect
     repo = Repo()
     rows = repo.list_events(200)
-    return templates.TemplateResponse("logs.html", {"request": request, "settings": get_settings(), "events": rows})
+    return _page(request, "logs.html", {"events": rows})
 
 
 def _execute_sync(whatif: bool, trigger: str = "manual", aquira_id: str | None = None) -> RedirectResponse:
     result = SyncOrchestrator().run(
         SyncContext(trigger=trigger, whatif=whatif, aquira_id=aquira_id or None),
-        repo=Repo(),
     )
     run_id = result.get("run_id")
     if run_id:
@@ -263,11 +260,10 @@ async def run_sync(request: Request):
     whatif_override = form.get("whatif")
     if force_live:
         if settings.whatif and confirm != "WRITE":
-            return templates.TemplateResponse(
+            return _page(
+                request,
                 "dashboard.html",
                 {
-                    "request": request,
-                    "settings": settings,
                     "mode_label": "PLAN ONLY — no writes",
                     "status": "ready",
                     "recent_sync_output": _latest_sync_output(),

@@ -36,10 +36,12 @@ Operator path after deploy:
 
 1. Open `/ui/login` (default user `admin` unless you changed `UI_USERNAME`)
 2. **Settings** — confirm URLs, save, **Test Aquira** and **Test HubSpot**
-3. **Owners** — Suggest matches, review, save
+3. **Owners** — Suggest matches, review, save. Saved mappings are not overwritten by later suggestions.
 4. Dashboard **Run what-if now** — inspect `/ui/runs/{id}` diffs
 5. Type `WRITE` and **Force live sync** only after the plan looks right
 6. Turn off what-if when you want the 30-minute scheduler to write
+
+In production (`ENVIRONMENT=production`) `/api/*` and `/sync/*` require the same operator login cookie as the UI. `/health`, `/ready`, and `/webhooks/hubspot` stay reachable without that cookie.
 
 Postgres is not published to the host. Only the middleware port is.
 

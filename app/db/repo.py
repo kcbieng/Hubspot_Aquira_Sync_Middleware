@@ -21,6 +21,7 @@ def _as_datetime(value: str | datetime | None) -> datetime | None:
 
 class Repo:
     def __init__(self, session: Session | None = None):
+        self._owns_session = session is None
         self.session = session or SessionLocal()
 
     def set_setting(self, key: str, value: str | None) -> None:
@@ -197,4 +198,8 @@ class Repo:
             return
         self.session.add(WebhookReceipt(message_id=message_id))
         self.session.commit()
+
+    def close(self) -> None:
+        if self._owns_session:
+            self.session.close()
 

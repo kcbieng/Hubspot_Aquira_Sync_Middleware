@@ -50,6 +50,8 @@ class PollJob:
                 "message": str(exc),
                 "timestamp": datetime.utcnow().isoformat(),
             }
+        finally:
+            repo.close()
 
 
 _active_job: PollJob | None = None

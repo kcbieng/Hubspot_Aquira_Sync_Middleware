@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -66,6 +66,29 @@ class _NoopRepo:
 
     def set_cursor(self, *args, **kwargs) -> None:
         return None
+
+    def close(self) -> None:
+        return None
+
+
+GROUP_ENTITY = {
+    "companies": "company",
+    "contacts": "contact",
+    "deals": "deal",
+    "revenue": "revenue_period",
+}
+
+
+def _lookup_from_existing(existing: dict[str, list[dict[str, Any]]]) -> dict[tuple[str, str], str]:
+    lookup: dict[tuple[str, str], str] = {}
+    for group, entity_type in GROUP_ENTITY.items():
+        for row in existing.get(group) or []:
+            properties = row.get("properties") or {}
+            aquira_id = str(properties.get("aquira_id") or row.get("aquira_id") or "")
+            ident = str(row.get("id") or row.get("hubspotId") or "")
+            if aquira_id and ident:
+                lookup[(entity_type, aquira_id)] = ident
+    return lookup
 
 
 @dataclass
@@ -379,6 +402,7 @@ class SyncOrchestrator:
         existing: dict[str, list[dict[str, Any]]] | None = None,
     ) -> dict[str, Any]:
         self.acquire_lock()
+        owned_repo = repo is None
         repo = repo or _NoopRepo()
         started_at = datetime.utcnow()
         entities = self._normalize_entities(context)
@@ -411,36 +435,7 @@ class SyncOrchestrator:
                 create_missing_clients=bool(settings.sync_create_aquira_client),
             )
 
-            lookup: dict[tuple[str, str], str] = {}
-            for group, rows in existing.items():
-                entity_type = "revenue_period" if group == "revenue" else group.rstrip("s") if group.endswith("s") else group
-                if group == "unsynced":
-                    continue
-                for row in rows:
-                    properties = row.get("properties") or {}
-                    aquira_id = str(properties.get("aquira_id") or row.get("aquira_id") or "")
-                    ident = str(row.get("id") or row.get("hubspotId") or "")
-                    if aquira_id and ident:
-                        lookup[(entity_type if entity_type != "companie" else "company", aquira_id)] = ident
-            # fix companies pluralization
-            for row in existing.get("companies") or []:
-                properties = row.get("properties") or {}
-                aquira_id = str(properties.get("aquira_id") or "")
-                ident = str(row.get("id") or row.get("hubspotId") or "")
-                if aquira_id and ident:
-                    lookup[("company", aquira_id)] = ident
-            for row in existing.get("contacts") or []:
-                properties = row.get("properties") or {}
-                aquira_id = str(properties.get("aquira_id") or "")
-                ident = str(row.get("id") or row.get("hubspotId") or "")
-                if aquira_id and ident:
-                    lookup[("contact", aquira_id)] = ident
-            for row in existing.get("deals") or []:
-                properties = row.get("properties") or {}
-                aquira_id = str(properties.get("aquira_id") or "")
-                ident = str(row.get("id") or row.get("hubspotId") or "")
-                if aquira_id and ident:
-                    lookup[("deal", aquira_id)] = ident
+            lookup = _lookup_from_existing(existing)
 
             applied: list[dict[str, Any]] = []
             if not items:
@@ -531,24 +526,39 @@ class SyncOrchestrator:
             for item in applied:
                 action = str(item.get("action") or "planned")
                 counts[action] = counts.get(action, 0) + 1
+            error_count = counts.get("error", 0)
+            if error_count and error_count == len(applied):
+                status = "error"
+            elif error_count:
+                status = "partial"
+            else:
+                status = "success"
             summary = {"counts": counts, "itemCount": len(applied), "warnings": warnings}
             if hasattr(run, "status"):
-                run.status = "success"
+                run.status = status
             if hasattr(run, "summary_json"):
                 import json
 
                 run.summary_json = json.dumps(summary)
             if hasattr(run, "finished_at"):
                 run.finished_at = datetime.utcnow()
+            if hasattr(run, "error") and status != "success":
+                run.error = f"{error_count} item error(s)" if error_count else None
             if hasattr(repo, "session"):
                 repo.session.commit()
             try:
-                repo.set_cursor("poll", last_started=started_at, last_finished=datetime.utcnow(), last_success_at=datetime.utcnow(), last_error=None)
+                repo.set_cursor(
+                    "poll",
+                    last_started=started_at,
+                    last_finished=datetime.utcnow(),
+                    last_success_at=datetime.utcnow() if status != "error" else None,
+                    last_error=None if status == "success" else f"{error_count} item error(s)",
+                )
             except Exception:
                 pass
-            repo.add_event("sync", "INFO", "sync completed", {"trigger": context.trigger, "whatif": context.whatif, "entities": entities, "counts": counts})
+            repo.add_event("sync", "INFO", "sync completed", {"trigger": context.trigger, "whatif": context.whatif, "entities": entities, "counts": counts, "status": status})
             return {
-                "status": "success",
+                "status": status,
                 "trigger": context.trigger,
                 "whatif": context.whatif,
                 "entities": entities,
@@ -577,6 +587,12 @@ class SyncOrchestrator:
             if live_aquira is not None and hasattr(live_aquira, "logout"):
                 try:
                     live_aquira.logout()
+                except Exception:
+                    pass
+            closer = getattr(repo, "close", None)
+            if owned_repo and callable(closer):
+                try:
+                    closer()
                 except Exception:
                     pass
             self.release_lock()

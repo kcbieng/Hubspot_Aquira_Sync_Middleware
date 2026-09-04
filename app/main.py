@@ -2,17 +2,19 @@ from contextlib import asynccontextmanager
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.api.routes import _run_sync_now, router as api_router, run_sync_client, run_sync_contract, sync_status_stub
 from app.jobs.poll import PollJob, set_active_job
 from app.runtime import apply_db_overlay
+from app.session import is_logged_in
 from app.settings import get_settings
 from app.ui.routes import router as ui_router
 from app.webhooks.routes import router as webhook_router
 
 poll_job: PollJob | None = None
+OPEN_API_PATHS = {"/api/login", "/api/logout"}
 
 
 def _configure_logging() -> None:
@@ -51,6 +53,17 @@ app.include_router(ui_router)
 app.include_router(webhook_router)
 
 
+@app.middleware("http")
+async def protect_operator_api(request: Request, call_next):
+    settings = get_settings()
+    if settings.environment == "production":
+        path = request.url.path
+        if path.startswith("/api/") or path.startswith("/sync/"):
+            if path not in OPEN_API_PATHS and not is_logged_in(request):
+                return JSONResponse({"detail": "login required"}, status_code=401)
+    return await call_next(request)
+
+
 @app.get("/")
 def root():
     return RedirectResponse(url="/ui", status_code=302)
@@ -67,22 +80,25 @@ def ready() -> JSONResponse:
 
     settings = get_settings()
     repo = Repo()
-    cursor = repo.get_cursor("poll")
-    aquira_ready = bool(settings.aquira_username and settings.aquira_password)
-    hubspot_ready = bool(settings.hubspot_access_token)
-    last_success = cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None
-    last_error = cursor.last_error if cursor else None
-    payload = {
-        "status": "ready",
-        "environment": settings.environment,
-        "aquira_configured": aquira_ready,
-        "hubspot_configured": hubspot_ready,
-        "whatif": settings.whatif,
-        "last_success_at": last_success,
-        "last_error": last_error,
-        "configured": aquira_ready and hubspot_ready,
-    }
-    return JSONResponse(payload)
+    try:
+        cursor = repo.get_cursor("poll")
+        aquira_ready = bool(settings.aquira_username and settings.aquira_password)
+        hubspot_ready = bool(settings.hubspot_access_token)
+        last_success = cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None
+        last_error = cursor.last_error if cursor else None
+        payload = {
+            "status": "ready",
+            "environment": settings.environment,
+            "aquira_configured": aquira_ready,
+            "hubspot_configured": hubspot_ready,
+            "whatif": settings.whatif,
+            "last_success_at": last_success,
+            "last_error": last_error,
+            "configured": aquira_ready and hubspot_ready,
+        }
+        return JSONResponse(payload)
+    finally:
+        repo.close()
 
 
 @app.get("/metrics")
@@ -91,19 +107,22 @@ def metrics() -> dict[str, object]:
 
     settings = get_settings()
     repo = Repo()
-    latest = repo.latest_run()
-    cursor = repo.get_cursor("poll")
-    return {
-        "service": settings.app_name,
-        "whatif": settings.whatif,
-        "sync_interval_minutes": settings.sync_interval_minutes,
-        "status": "ok",
-        "last_run_id": latest.id if latest else None,
-        "last_run_status": latest.status if latest else None,
-        "last_success_at": cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None,
-        "last_error": cursor.last_error if cursor else None,
-        "running": bool(poll_job and poll_job.orchestrator._active) if poll_job else False,
-    }
+    try:
+        latest = repo.latest_run()
+        cursor = repo.get_cursor("poll")
+        return {
+            "service": settings.app_name,
+            "whatif": settings.whatif,
+            "sync_interval_minutes": settings.sync_interval_minutes,
+            "status": "ok",
+            "last_run_id": latest.id if latest else None,
+            "last_run_status": latest.status if latest else None,
+            "last_success_at": cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None,
+            "last_error": cursor.last_error if cursor else None,
+            "running": bool(poll_job and poll_job.orchestrator._active) if poll_job else False,
+        }
+    finally:
+        repo.close()
 
 
 @app.post("/sync/run")

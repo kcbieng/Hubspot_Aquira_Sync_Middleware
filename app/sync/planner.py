@@ -7,24 +7,53 @@ from app.hashutil import content_hash
 from app.mapping.parties import party_type_for_client
 from app.mapping.revenue import allocate_revenue
 
+IDENTITY_COMPANY_FIELDS = ("name", "phone", "domain", "address", "city", "state")
+IDENTITY_CONTACT_FIELDS = ("firstname", "lastname", "email", "phone")
+
+
+def _as_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off", ""}:
+            return False
+    return None
+
 
 def _same(left: Any, right: Any) -> bool:
     if left is right:
         return True
-    if left is None and right is None:
+    left = unwrap(left)
+    right = unwrap(right)
+    if left is None and right in (None, ""):
         return True
-    if isinstance(left, bool) or isinstance(right, bool):
-        return left is right or left == right
-    if isinstance(left, (int, float, str)) and isinstance(right, (int, float, str)):
-        return str(left) == str(right)
-    return left == right
+    if right is None and left in (None, ""):
+        return True
+    left_bool = _as_bool(left)
+    right_bool = _as_bool(right)
+    if left_bool is not None and right_bool is not None:
+        return left_bool is right_bool
+    try:
+        if left not in (None, "") and right not in (None, ""):
+            if float(left) == float(right):
+                return True
+    except (TypeError, ValueError):
+        pass
+    if left is None or right is None:
+        return left == right
+    return str(left).strip() == str(right).strip()
 
 
 def field_diff(old: dict[str, Any] | None, new: dict[str, Any] | None) -> list[dict[str, Any]]:
     old_map = old or {}
     new_map = new or {}
     changes: list[dict[str, Any]] = []
-    for key in sorted(set(old_map) | set(new_map)):
+    for key in sorted(new_map):
         current = unwrap(old_map.get(key))
         proposed = unwrap(new_map.get(key))
         if not _same(current, proposed):
@@ -95,18 +124,24 @@ def plan_upsert(
     associations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     digest = content_hash(proposed)
-    if existing and existing.get("hash") == digest:
+    existing_hash = (existing or {}).get("hash")
+    diffs = [
+        row
+        for row in field_diff((existing or {}).get("properties") or {}, proposed)
+        if row["field"] != "aquira_version"
+    ]
+    unchanged = bool(existing) and (existing_hash == digest or not diffs)
+    if unchanged:
         return {
             "entityType": entity_type,
             "aquiraId": aquira_id,
-            "hubspotId": existing.get("hubspotId"),
+            "hubspotId": existing.get("hubspotId") if existing else None,
             "action": "skip",
             "name": name,
             "diffs": [],
             "properties": proposed,
             "associations": associations,
         }
-    diffs = [row for row in field_diff((existing or {}).get("properties") or {}, proposed) if row["field"] != "aquira_version"]
     if existing is None:
         diffs = [{**row, "from": None} for row in diffs]
     return {
@@ -121,15 +156,23 @@ def plan_upsert(
     }
 
 
+def _company_sort_key(client: dict[str, Any]) -> tuple[int, str]:
+    if client.get("IsAccount"):
+        return (0, str(client.get("Name") or ""))
+    if client.get("IsAdvertiser"):
+        return (2, str(client.get("Name") or ""))
+    return (1, str(client.get("Name") or ""))
+
+
 def plan_companies(clients: list[dict[str, Any]], existing_by_aquira: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for client in clients:
+    for client in sorted(clients, key=_company_sort_key):
         from_aquira = company_properties(client)
         existing = existing_by_aquira.get(str(client.get("ID")))
         props = dict(from_aquira)
         if existing:
             current = existing.get("properties") or {}
-            for field in ("name", "phone", "domain", "address", "city", "state"):
+            for field in IDENTITY_COMPANY_FIELDS:
                 if current.get(field) not in (None, ""):
                     props[field] = current.get(field)
         account_id = None
@@ -161,7 +204,7 @@ def plan_contacts(
         props = dict(from_aquira)
         if existing:
             current = existing.get("properties") or {}
-            for field in ("firstname", "lastname", "email", "phone"):
+            for field in IDENTITY_CONTACT_FIELDS:
                 if current.get(field) not in (None, ""):
                     props[field] = current.get(field)
             if props.get("email"):
