@@ -399,6 +399,36 @@ def normalize_client(payload: Any) -> dict[str, Any] | None:
     }
 
 
+def _station_from_item(item: dict[str, Any]) -> tuple[int, str]:
+    stations = item.get("SelectedStationsCombined") or item.get("Stations") or item.get("Station")
+    station_inner = unwrap(stations)
+    station_ref = as_record(item.get("Station") if isinstance(item.get("Station"), dict) else {})
+    if isinstance(station_inner, dict):
+        station_ref = as_record(station_inner)
+    elif isinstance(station_inner, list) and station_inner:
+        station_ref = as_record(unwrap(station_inner[0]))
+    station_id = int(as_num(item.get("station_id", item.get("StationID", station_ref.get("ID")))))
+    station = (
+        as_str(item.get("station", item.get("StationName", station_ref.get("Name"))))
+        or _first_station_name(stations)
+        or "ALL"
+    )
+    return station_id, station
+
+
+def _bag_rows(payload: Any, *keys: str) -> list[Any]:
+    root = as_record(unwrap_deep(payload))
+    entity = as_record(root.get("Entity"))
+    bags = []
+    for key in keys:
+        bags.extend([root.get(key), entity.get(key), as_record(entity.get("Summary")).get(key)])
+    for bag in bags:
+        rows = as_array(bag)
+        if rows:
+            return rows
+    return []
+
+
 def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
     root = as_record(unwrap_deep(payload))
     entity = as_record(root.get("Entity"))
@@ -426,19 +456,7 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
         value = item.get("Value")
         if isinstance(value, dict) and not item.get("StartDate") and not item.get("FirstSpot"):
             item = as_record(unwrap_deep(value))
-        stations = item.get("SelectedStationsCombined") or item.get("Stations") or item.get("Station")
-        station_inner = unwrap(stations)
-        station_ref = as_record(item.get("Station") if isinstance(item.get("Station"), dict) else {})
-        if isinstance(station_inner, dict):
-            station_ref = as_record(station_inner)
-        elif isinstance(station_inner, list) and station_inner:
-            station_ref = as_record(unwrap(station_inner[0]))
-        station_id = int(as_num(item.get("station_id", item.get("StationID", station_ref.get("ID")))))
-        station = (
-            as_str(item.get("station", item.get("StationName", station_ref.get("Name"))))
-            or _first_station_name(stations)
-            or "ALL"
-        )
+        station_id, station = _station_from_item(item)
         start = iso_date(
             item.get("start")
             or item.get("StartDate")
@@ -473,12 +491,13 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
                 "start": start,
                 "end": end,
                 "amount": amount,
+                "line_kind": "spot",
                 "products": _ref_names(item.get("Products") or item.get("Product")),
                 "spots_by_month": {key: float(as_num(val)) for key, val in spots.items()} or None,
                 "seconds_by_month": {key: float(as_num(val)) for key, val in seconds.items()} or None,
             }
         )
-    if not lines:
+    if not lines and not _bag_rows(payload, "ChargeLines", "Charges", "charge_lines"):
         summary = as_record(entity.get("Summary") or root.get("Summary"))
         start = iso_date(summary.get("StartDate"))
         end = iso_date(summary.get("EndDate"))
@@ -491,11 +510,58 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
                     "start": start,
                     "end": end,
                     "amount": amount,
+                    "line_kind": "spot",
                     "products": [],
                     "spots_by_month": None,
                     "seconds_by_month": None,
                 }
             )
+    return lines
+
+
+def normalize_charge_lines(payload: Any) -> list[dict[str, Any]]:
+    rows = _bag_rows(payload, "ChargeLines", "Charges", "charge_lines")
+    lines: list[dict[str, Any]] = []
+    for row in rows:
+        item = as_record(unwrap_deep(row))
+        if not item:
+            continue
+        value = item.get("Value")
+        if isinstance(value, dict) and not item.get("GrossAmount") and not item.get("Date"):
+            item = as_record(unwrap_deep(value))
+        amount = float(
+            as_num(
+                item.get("NetAmount")
+                or item.get("Amount")
+                or item.get("GrossAmount")
+                or item.get("RateCardAmount")
+            )
+        )
+        charge_date = iso_date(
+            item.get("Date")
+            or item.get("FirstEligibleDate")
+            or item.get("StartDate")
+            or item.get("ChargeDate")
+        )
+        end = iso_date(item.get("EndDate") or item.get("LastEligibleDate")) or charge_date
+        if not amount or not charge_date:
+            continue
+        station_id, station = _station_from_item(item)
+        charge_type = _ref_name(item.get("ChargeType")) or as_str(item.get("Description"))
+        lines.append(
+            {
+                "station_id": station_id,
+                "station": station or "ALL",
+                "start": charge_date,
+                "end": end,
+                "amount": amount,
+                "line_kind": "charge",
+                "charge_type": charge_type,
+                "products": [],
+                "spots_by_month": None,
+                "seconds_by_month": None,
+            }
+        )
     return lines
 
 
@@ -519,6 +585,13 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
     if not is_proposal:
         is_proposal = not is_contract and not cancelled
     lines = spot_lines if spot_lines is not None else normalize_spot_lines(payload)
+    charge_lines = [line for line in lines if line.get("line_kind") == "charge"]
+    if not charge_lines:
+        extra_charges = normalize_charge_lines(payload)
+        if extra_charges:
+            lines = [*lines, *extra_charges]
+            charge_lines = extra_charges
+
     advertiser_id = _ref_id(entity.get("AdvertiserID") or entity.get("Advertiser"))
     account_id = _ref_id(entity.get("AccountID") or entity.get("Account") or entity.get("ClientID"))
     if not advertiser_id:

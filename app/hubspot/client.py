@@ -68,6 +68,50 @@ DEAL_PROPS = [
     {"name": "aquira_account_id", "label": "Aquira account ID", "type": "string", "fieldType": "text"},
     {"name": "aquira_advertiser_id", "label": "Aquira advertiser ID", "type": "string", "fieldType": "text"},
     {"name": "aquira_sales_rep", "label": "Aquira sales rep", "type": "string", "fieldType": "text"},
+    {"name": "aquira_allocated_amount", "label": "Aquira allocated amount", "type": "number", "fieldType": "number"},
+    {"name": "aquira_line_total", "label": "Aquira line total", "type": "number", "fieldType": "number"},
+    {"name": "aquira_spot_total", "label": "Aquira spot total", "type": "number", "fieldType": "number"},
+    {"name": "aquira_charge_total", "label": "Aquira charge total", "type": "number", "fieldType": "number"},
+    {"name": "aquira_amount_delta", "label": "Aquira amount delta", "type": "number", "fieldType": "number"},
+    {
+        "name": "aquira_amount_mismatch",
+        "label": "Aquira amount mismatch",
+        "type": "bool",
+        "fieldType": "booleancheckbox",
+        "options": BOOL_OPTIONS,
+    },
+]
+REVENUE_PROPS = [
+    {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
+    {"name": "period", "label": "Period", "type": "date", "fieldType": "date"},
+    {"name": "amount", "label": "Amount", "type": "number", "fieldType": "number"},
+    {"name": "spot_amount", "label": "Spot amount", "type": "number", "fieldType": "number"},
+    {"name": "charge_amount", "label": "Charge amount", "type": "number", "fieldType": "number"},
+    {
+        "name": "source",
+        "label": "Source",
+        "type": "enumeration",
+        "fieldType": "select",
+        "options": [
+            {"label": "Spot", "value": "spot"},
+            {"label": "Charge", "value": "charge"},
+            {"label": "Mixed", "value": "mixed"},
+        ],
+    },
+    {"name": "station", "label": "Station", "type": "string", "fieldType": "text"},
+    {"name": "station_id", "label": "Station ID", "type": "number", "fieldType": "number"},
+    {
+        "name": "kind",
+        "label": "Kind",
+        "type": "enumeration",
+        "fieldType": "select",
+        "options": [
+            {"label": "Proposal", "value": "proposal"},
+            {"label": "Booked", "value": "booked"},
+        ],
+    },
+    {"name": "contract_cd", "label": "Contract CD", "type": "string", "fieldType": "text"},
+    {"name": "deal_aquira_id", "label": "Deal Aquira ID", "type": "string", "fieldType": "text"},
 ]
 OBJECT_GROUPS = {
     "companies": "companyinformation",
@@ -110,6 +154,7 @@ class HubSpotClient:
         self.base_url = "https://api.hubapi.com"
         self.revenue_object_type = "revenue_period"
         self.portal_id: str | None = None
+        self._association_cache: dict[str, dict[str, Any]] = {}
 
     def headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {"Content-Type": "application/json", "Accept": "application/json"}
@@ -637,18 +682,48 @@ class HubSpotClient:
             raise
 
     def associate(self, from_type: str, from_id: str, to_type: str, to_id: str, type_id: int | None = None) -> None:
-        types = [
-            {
-                "associationCategory": "HUBSPOT_DEFINED",
-                "associationTypeId": type_id or default_association_type(from_type, to_type),
-            }
-        ]
+        spec = self._association_spec(from_type, to_type, type_id)
         try:
-            self._request("PUT", f"/crm/v4/objects/{from_type}/{from_id}/associations/{to_type}/{to_id}", json=types)
+            self._request("PUT", f"/crm/v4/objects/{from_type}/{from_id}/associations/{to_type}/{to_id}", json=[spec])
         except HubSpotApiError as err:
             if err.status in {400, 409}:
+                logger.warning(
+                    "HubSpot association %s %s -> %s %s failed (HTTP %s): %s",
+                    from_type,
+                    from_id,
+                    to_type,
+                    to_id,
+                    err.status,
+                    (err.body or "")[:300],
+                )
                 return
             raise
+
+    def _association_spec(self, from_type: str, to_type: str, type_id: int | None = None) -> dict[str, Any]:
+        if type_id:
+            category = "HUBSPOT_DEFINED" if from_type in {"contacts", "companies", "deals"} and to_type in {"contacts", "companies", "deals"} else "USER_DEFINED"
+            return {"associationCategory": category, "associationTypeId": type_id}
+        cache_key = f"{from_type}->{to_type}"
+        if cache_key in self._association_cache:
+            return self._association_cache[cache_key]
+        spec = {
+            "associationCategory": "HUBSPOT_DEFINED",
+            "associationTypeId": default_association_type(from_type, to_type),
+        }
+        if from_type not in {"contacts", "companies", "deals"} or to_type not in {"contacts", "companies", "deals"}:
+            try:
+                payload = self._request("GET", f"/crm/v4/associations/{from_type}/{to_type}/labels")
+                row = (payload.get("results") or [{}])[0]
+                ident = row.get("typeId") or row.get("id")
+                if ident:
+                    spec = {
+                        "associationCategory": row.get("category") or "USER_DEFINED",
+                        "associationTypeId": int(ident),
+                    }
+            except Exception as exc:
+                logger.warning("Could not resolve HubSpot association %s: %s", cache_key, exc)
+        self._association_cache[cache_key] = spec
+        return spec
 
     def ensure_crm_schema(self) -> dict[str, Any]:
         created: list[str] = []
@@ -688,6 +763,25 @@ class HubSpotClient:
                     warnings.append(f"Could not create {object_type}.{definition['name']}: {exc}")
         try:
             self.ensure_revenue_object()
+            try:
+                existing = {item.get("name") for item in (self.get_properties(self.revenue_object_type).get("results") or [])}
+            except Exception as exc:
+                warnings.append(f"Could not list revenue_period properties: {exc}")
+                existing = set()
+            for definition in REVENUE_PROPS:
+                if definition["name"] in existing:
+                    continue
+                try:
+                    self._request(
+                        "POST",
+                        f"/crm/v3/properties/{self.revenue_object_type}",
+                        json=definition,
+                    )
+                    created.append(f"{self.revenue_object_type}.{definition['name']}")
+                except HubSpotApiError as exc:
+                    if exc.status in {400, 409}:
+                        continue
+                    warnings.append(f"Could not create revenue_period.{definition['name']}: {exc}")
         except Exception as exc:
             warnings.append(f"Revenue period schema unavailable: {exc}")
         return {"created": created, "warnings": warnings}
@@ -732,24 +826,7 @@ class HubSpotClient:
                     "requiredProperties": ["aquira_id"],
                     "searchableProperties": ["aquira_id", "contract_cd"],
                     "associatedObjects": ["COMPANY", "DEAL"],
-                    "properties": [
-                        {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
-                        {"name": "period", "label": "Period", "type": "date", "fieldType": "date"},
-                        {"name": "amount", "label": "Amount", "type": "number", "fieldType": "number"},
-                        {"name": "station", "label": "Station", "type": "string", "fieldType": "text"},
-                        {"name": "station_id", "label": "Station ID", "type": "number", "fieldType": "number"},
-                        {
-                            "name": "kind",
-                            "label": "Kind",
-                            "type": "enumeration",
-                            "fieldType": "select",
-                            "options": [
-                                {"label": "Proposal", "value": "proposal"},
-                                {"label": "Booked", "value": "booked"},
-                            ],
-                        },
-                        {"name": "contract_cd", "label": "Contract CD", "type": "string", "fieldType": "text"},
-                    ],
+                    "properties": REVENUE_PROPS,
                 },
             )
             self.revenue_object_type = created.get("objectTypeId") or created.get("name") or "revenue_period"
@@ -815,6 +892,12 @@ class HubSpotClient:
                 "aquira_account_id",
                 "aquira_advertiser_id",
                 "aquira_sales_rep",
+                "aquira_allocated_amount",
+                "aquira_line_total",
+                "aquira_spot_total",
+                "aquira_charge_total",
+                "aquira_amount_delta",
+                "aquira_amount_mismatch",
             ],
             {"propertyName": "aquira_id", "operator": "HAS_PROPERTY"},
         )
@@ -823,7 +906,7 @@ class HubSpotClient:
         try:
             return self.search_all(
                 self.revenue_object_type,
-                ["aquira_id", "period", "amount", "station", "station_id", "kind", "contract_cd"],
+                ["aquira_id", "period", "amount", "spot_amount", "charge_amount", "source", "station", "station_id", "kind", "contract_cd", "deal_aquira_id"],
                 {"propertyName": "aquira_id", "operator": "HAS_PROPERTY"},
             )
         except HubSpotApiError as err:

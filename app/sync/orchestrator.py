@@ -494,6 +494,12 @@ class SyncOrchestrator:
                 self._owner_map(repo),
                 create_missing_clients=bool(settings.sync_create_aquira_client),
             )
+            for item in items:
+                warning = item.get("warning")
+                if warning:
+                    warnings.append(str(warning))
+                    repo.add_event("sync", "WARN", str(warning), {"aquira_id": item.get("aquiraId"), "entity": item.get("entityType")})
+
 
             lookup = _lookup_from_existing(existing)
 
@@ -550,6 +556,7 @@ class SyncOrchestrator:
                                 "associations": next_item.get("associations"),
                                 "writeback": next_item.get("writeback") or False,
                                 "whatif": context.whatif,
+                                "warning": next_item.get("warning"),
                             },
                             error=next_item.get("error"),
                         )

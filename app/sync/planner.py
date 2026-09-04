@@ -5,7 +5,7 @@ from typing import Any
 from app.aquira.fieldvalues import unwrap
 from app.hashutil import content_hash
 from app.mapping.parties import party_type_for_client
-from app.mapping.revenue import allocate_revenue
+from app.mapping.revenue import allocate_revenue, contract_revenue_input, summarize_allocation
 
 IDENTITY_COMPANY_FIELDS = ("name", "phone", "domain", "address", "city", "state")
 IDENTITY_CONTACT_FIELDS = ("firstname", "lastname", "email", "phone")
@@ -96,6 +96,8 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
 
 
 def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None) -> dict[str, Any]:
+    if contract.get("allocated_total") is None:
+        attach_revenue_summary(contract)
     description = str(contract.get("Description") or "").strip()
     advertiser = advertiser_name or contract.get("Name") or "Contract"
     label = description or advertiser
@@ -120,7 +122,14 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
         "aquira_account_id": str(contract.get("AccountID") or ""),
         "aquira_advertiser_id": str(contract.get("AdvertiserID") or ""),
         "aquira_sales_rep": str(contract.get("SalesRepID") or ""),
+        "aquira_allocated_amount": contract.get("allocated_total") if contract.get("allocated_total") is not None else None,
+        "aquira_line_total": contract.get("line_total") if contract.get("line_total") is not None else None,
+        "aquira_spot_total": contract.get("spot_total") if contract.get("spot_total") is not None else None,
+        "aquira_charge_total": contract.get("charge_total") if contract.get("charge_total") is not None else None,
+        "aquira_amount_delta": contract.get("amount_delta") if contract.get("amount_delta") is not None else None,
+        "aquira_amount_mismatch": bool(contract.get("amount_mismatch")),
     }
+    props = {key: value for key, value in props.items() if value is not None}
     if contract.get("hubspot_team_id"):
         props["hubspot_team_id"] = str(contract.get("hubspot_team_id"))
     return props
@@ -233,6 +242,19 @@ def plan_contacts(
     return items
 
 
+def attach_revenue_summary(contract: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    periods = allocate_revenue(contract_revenue_input(contract))
+    summary = summarize_allocation(contract, periods)
+    contract["allocated_total"] = summary["allocated_total"]
+    contract["line_total"] = summary["line_total"]
+    contract["spot_total"] = summary["spot_total"]
+    contract["charge_total"] = summary["charge_total"]
+    contract["amount_delta"] = summary["delta"]
+    contract["amount_mismatch"] = summary["mismatch"]
+    contract["amount_warning"] = summary["warning"]
+    return periods, summary
+
+
 def plan_deals(
     contracts: list[dict[str, Any]],
     existing_by_aquira: dict[str, dict[str, Any]],
@@ -242,6 +264,7 @@ def plan_deals(
     items: list[dict[str, Any]] = []
     names = client_name_by_id or {}
     for contract in contracts:
+        attach_revenue_summary(contract)
         advertiser_name = names.get(str(contract.get("AdvertiserID")))
         props = deal_properties(contract, advertiser_name)
         owner_id = None
@@ -250,16 +273,17 @@ def plan_deals(
         if owner_id:
             props["hubspot_owner_id"] = owner_id
         company_ids = list({str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")} - {""})
-        items.append(
-            plan_upsert(
-                "deal",
-                str(contract.get("ID")),
-                str(props.get("dealname") or ""),
-                props,
-                existing_by_aquira.get(str(contract.get("ID"))),
-                {"companyIds": company_ids, "ownerId": owner_id},
-            )
+        item = plan_upsert(
+            "deal",
+            str(contract.get("ID")),
+            str(props.get("dealname") or ""),
+            props,
+            existing_by_aquira.get(str(contract.get("ID"))),
+            {"companyIds": company_ids, "ownerId": owner_id},
         )
+        if contract.get("amount_warning"):
+            item["warning"] = contract["amount_warning"]
+        items.append(item)
     return items
 
 
@@ -267,27 +291,21 @@ def plan_revenue(contracts: list[dict[str, Any]], existing_by_aquira: dict[str, 
     items: list[dict[str, Any]] = []
     produced: set[str] = set()
     for contract in contracts:
-        periods = allocate_revenue(
-            {
-                "contract_id": contract.get("ID"),
-                "contract_cd": contract.get("ContractCD"),
-                "kind": "booked" if contract.get("IsContract") else "proposal",
-                "fallback_start": contract.get("StartDate"),
-                "fallback_end": contract.get("EndDate"),
-                "fallback_amount": contract.get("TotalValue"),
-                "lines": contract.get("lines") or [],
-            }
-        )
+        periods, _summary = attach_revenue_summary(contract)
         for period in periods:
             produced.add(period["aquira_id"])
             props = {
                 "aquira_id": period["aquira_id"],
                 "period": period["period"],
                 "amount": period["amount"],
+                "spot_amount": period.get("spot_amount") or 0,
+                "charge_amount": period.get("charge_amount") or 0,
+                "source": period.get("source") or "spot",
                 "station": period["station"],
                 "station_id": period["station_id"],
                 "kind": period["kind"],
                 "contract_cd": period["contract_cd"],
+                "deal_aquira_id": str(contract.get("ID") or ""),
             }
             items.append(
                 plan_upsert(
@@ -302,6 +320,7 @@ def plan_revenue(contracts: list[dict[str, Any]], existing_by_aquira: dict[str, 
                     },
                 )
             )
+
     for aquira_id, existing in existing_by_aquira.items():
         if aquira_id in produced:
             continue

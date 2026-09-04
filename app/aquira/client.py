@@ -10,6 +10,7 @@ from app.aquira.normalize import (
     list_from_envelope,
     merge_client,
     merge_contract,
+    normalize_charge_lines,
     normalize_client,
     normalize_contact,
     normalize_contract,
@@ -324,10 +325,30 @@ class AquiraSessionClient:
                 return lines
         return []
 
+    def load_charge_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        charges = normalize_charge_lines(loaded) if loaded else []
+
+        if charges:
+            return charges
+        attempts = [
+            ("POST", "/Contract/GetContractDetailAnalysis", {"ContractID": int(contract_id) if str(contract_id).isdigit() else contract_id}),
+            ("POST", f"/Contract/Load/{contract_id}", {"name": "load"}),
+        ]
+        for method, path, body in attempts:
+            payload = self.try_request(method, path, json=body)
+            if not payload:
+                continue
+            charges = normalize_charge_lines(payload)
+            if charges:
+                return charges
+        return []
+
     def load_contract(self, contract_id: str | int) -> dict[str, Any] | None:
         payload = self.request("POST", f"/Contract/Load/{contract_id}", json={"name": "load"})
         lines = self.load_spot_lines(contract_id, payload)
-        return normalize_contract(payload, lines)
+        charges = self.load_charge_lines(contract_id, payload)
+        return normalize_contract(payload, [*lines, *charges])
+
 
     def load_sales_reps(self) -> list[dict[str, Any]]:
         if not self.logged_in:

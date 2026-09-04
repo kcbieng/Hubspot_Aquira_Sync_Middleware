@@ -21,6 +21,12 @@
             <div class="panel-card-soft p-3">
               <div class="fw-semibold">{{ item.row.entity_type }} — {{ item.row.action }}{% if item.diff and item.diff.name %} • {{ item.diff.name }}{% endif %}</div>
               <div class="small text-muted">Aquira: {{ item.row.aquira_id }} • HubSpot: {{ item.row.hubspot_id }}</div>
+              {% if item.diff and item.diff.warning %}
+                <div class="alert alert-warning py-2 px-3 mt-2 mb-0">{{ item.diff.warning }}</div>
+              {% endif %}
+              {% if item.diff and item.diff.properties and item.diff.properties.aquira_amount_mismatch %}
+                <div class="small mt-2">Allocated {{ item.diff.properties.aquira_allocated_amount }} vs Aquira {{ item.diff.properties.amount }} (spot {{ item.diff.properties.aquira_spot_total }} + charges {{ item.diff.properties.aquira_charge_total }})</div>
+              {% endif %}
               {% if item.diff and item.diff.diffs %}
                 <ul class="mb-0 mt-2">
                   {% for diff in item.diff.diffs %}
