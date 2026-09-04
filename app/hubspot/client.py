@@ -36,6 +36,7 @@ class HubSpotApiError(RuntimeError):
 
 COMPANY_PROPS = [
     {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
+    {"name": "aquira_client_cd", "label": "Aquira client CD", "type": "string", "fieldType": "text"},
     {
         "name": "aquira_party_type",
         "label": "Aquira party type",
@@ -919,7 +920,7 @@ class HubSpotClient:
     def companies_with_aquira(self) -> list[dict[str, Any]]:
         rows = self.search_all(
             "companies",
-            ["name", "phone", "domain", "address", "city", "state", "website", "aquira_id", "aquira_party_type", "aquira_version"],
+            ["name", "phone", "domain", "address", "city", "state", "website", "aquira_id", "aquira_client_cd", "aquira_party_type", "aquira_version"],
             {"propertyName": "aquira_id", "operator": "HAS_PROPERTY"},
         )
         return [row for row in rows if (row.get("properties") or {}).get("aquira_id")]

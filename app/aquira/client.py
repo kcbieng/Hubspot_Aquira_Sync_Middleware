@@ -231,6 +231,62 @@ class AquiraSessionClient:
                 rows.append(contact)
         return rows
 
+    def _client_matches(self, client: dict[str, Any], query: str) -> bool:
+        needle = str(query or "").strip().lower()
+        if not needle:
+            return True
+        exact = {
+            str(client.get("ID") or "").strip().lower(),
+            str(client.get("ClientCD") or "").strip().lower(),
+        }
+        if needle in exact:
+            return True
+        for field in ("Name", "ShortName", "LongName"):
+            value = str(client.get(field) or "").strip().lower()
+            if value and (needle == value or needle in value):
+                return True
+        return False
+
+    def resolve_clients(self, query: str) -> list[dict[str, Any]]:
+        needle = str(query or "").strip()
+        rows = self.search_clients(needle)
+        matches = [row for row in rows if self._client_matches(row, needle)]
+        if matches:
+            logger.info("Resolved Aquira client query %r to %s row(s) by id/cd/name", needle, len(matches))
+            return matches
+        if needle.isdigit():
+            by_id = self.try_request("POST", "/Client/SearchByID", json={"SearchIDs": [int(needle)], "name": "by-id"})
+            for row in list_from_envelope(by_id or {}):
+                client = normalize_client(row)
+                if client:
+                    matches.append(client)
+            if matches:
+                logger.info("Resolved Aquira client query %r via SearchByID", needle)
+                return matches
+        lookup = self.try_request(
+            "POST",
+            "/Client/Lookup",
+            json={"SearchTerm": needle, "CurrentOnly": True, "accounts": True, "advertisers": True, "name": "lookup"},
+        )
+        for row in list_from_envelope(lookup or {}):
+            client = normalize_client(row)
+            if client and self._client_matches(client, needle):
+                matches.append(client)
+        if matches:
+            logger.info("Resolved Aquira client query %r via Lookup", needle)
+            return matches
+        if needle.isdigit():
+            loaded = self.try_request("POST", f"/Client/Load/{needle}")
+            client = normalize_client(loaded) if loaded else None
+            if client:
+                logger.info("Resolved Aquira client query %r via Load/%s", needle, needle)
+                return [client]
+        logger.warning(
+            "No Aquira client matched %r. The Aquira UI Client ID is ClientCD; /Client/Load uses the internal ID.",
+            needle,
+        )
+        return []
+
     def search_clients(self, search_term: str = "") -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
         get_all = self.try_request("GET", "/Client/Get")
@@ -372,24 +428,18 @@ class AquiraSessionClient:
             self.login()
         clients = self.search_clients(aquira_id or "")
         if aquira_id:
-            needle = aquira_id.lower()
-            filtered = [
-                client
-                for client in clients
-                if str(client.get("ID")) == aquira_id or needle in str(client.get("Name") or "").lower()
-            ]
-            if not filtered:
-                loaded = self.load_client(aquira_id)
-                filtered = [loaded] if loaded else []
-            clients = filtered
+            clients = self.resolve_clients(aquira_id)
         loaded_clients: list[dict[str, Any]] = []
         contacts: list[dict[str, Any]] = []
         clients_by_id: dict[int, dict[str, Any]] = {}
         for client in clients:
+            ident = client.get("ID")
+            if not ident:
+                continue
             try:
-                loaded = self.load_client(client["ID"])
+                loaded = self.load_client(ident)
             except Exception as exc:
-                logger.warning("Client/Load/%s failed: %s", client.get("ID"), exc)
+                logger.warning("Client/Load/%s failed: %s", ident, exc)
                 loaded = None
             merged = merge_client(client, loaded)
             if not merged:
@@ -398,6 +448,8 @@ class AquiraSessionClient:
 
         contracts = self.search_contracts(aquira_id or "")
         if aquira_id:
+            client_ids = {str(client_id) for client_id in clients_by_id}
+            client_cds = {str(row.get("ClientCD") or "") for row in clients_by_id.values()}
             contracts = [
                 contract
                 for contract in contracts
@@ -408,6 +460,9 @@ class AquiraSessionClient:
                     str(contract.get("AdvertiserID")),
                     str(contract.get("ContractCD")),
                 }
+                or str(contract.get("AccountID")) in client_ids
+                or str(contract.get("AdvertiserID")) in client_ids
+                or str(contract.get("ContractCD")) in client_cds
             ]
         loaded_contracts: list[dict[str, Any]] = []
         for contract in contracts:

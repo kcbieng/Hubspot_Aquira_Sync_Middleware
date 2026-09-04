@@ -378,6 +378,7 @@ def normalize_client(payload: Any) -> dict[str, Any] | None:
     street, city, state = _address_parts(entity)
     return {
         "ID": client_id,
+        "ClientCD": _entity_str(entity, "ClientCD", "CD") or None,
         "Version": int(as_num(entity.get("Version"), 0) or 0) or None,
         "Name": name,
         "LongName": _entity_str(entity, "LongName") or None,

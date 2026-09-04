@@ -1,8 +1,8 @@
 from unittest.mock import patch
 
 from app.aquira.client import AquiraSessionClient
-from app.aquira.normalize import normalize_contract
-from app.sync.planner import deal_properties, plan_deals
+from app.aquira.normalize import normalize_client, normalize_contract
+from app.sync.planner import company_properties, deal_properties, plan_deals
 
 
 def test_search_contracts_unions_lookup_and_get_proposals():
@@ -127,3 +127,39 @@ def test_load_contract_prefers_monthly_analysis():
     kinds = {line["line_kind"] for line in contract["lines"]}
     assert kinds == {"spot", "charge"}
     assert sum(line["amount"] for line in contract["lines"]) == 4500
+
+
+def test_resolve_clients_uses_client_cd_not_internal_id():
+    client = AquiraSessionClient(base_url="https://example.test", username="svc", password="x")
+
+    def fake_request(method, path, **kwargs):
+        if path == "/Client/Get":
+            return {
+                "Success": True,
+                "Data": [
+                    {"ID": 812, "ClientCD": "10043", "Name": "A New Beginning"},
+                    {"ID": 43, "ClientCD": "10007", "Name": "Someone Else"},
+                ],
+            }
+        if path == "/Client/Search":
+            return {"Success": True, "Data": []}
+        if path.startswith("/Client/Load/"):
+            raise AssertionError(f"should not Load by ClientCD: {path}")
+        return {"Success": True, "Data": []}
+
+    with patch.object(client, "request", side_effect=fake_request):
+        rows = client.resolve_clients("10043")
+
+    assert len(rows) == 1
+    assert rows[0]["ID"] == 812
+    assert rows[0]["ClientCD"] == "10043"
+    assert rows[0]["Name"] == "A New Beginning"
+
+
+def test_normalize_client_keeps_client_cd():
+    row = normalize_client({"ID": 812, "ClientCD": "10043", "Name": "A New Beginning", "IsAccount": True})
+    assert row["ID"] == 812
+    assert row["ClientCD"] == "10043"
+    props = company_properties(row)
+    assert props["aquira_id"] == "812"
+    assert props["aquira_client_cd"] == "10043"

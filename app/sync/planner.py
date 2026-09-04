@@ -72,6 +72,7 @@ def company_properties(client: dict[str, Any]) -> dict[str, Any]:
         "city": client.get("City") or "",
         "state": client.get("State") or "",
         "aquira_id": str(client.get("ID")),
+        "aquira_client_cd": str(client.get("ClientCD") or ""),
         "aquira_party_type": party_type_for_client(client),
         "aquira_version": client.get("Version"),
     }
