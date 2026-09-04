@@ -474,12 +474,15 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
         amount = float(
             as_num(
                 item.get("amount")
-                or item.get("Amount")
+                or item.get("TotalAmount")
+                or item.get("TotalExcludingFillersAmount")
                 or item.get("NetAmount")
+                or item.get("Amount")
                 or item.get("TotalValue")
                 or item.get("BookedTotalAmount")
             )
         )
+        booked_amount = float(as_num(item.get("BookedTotalAmount"))) or amount
         spots = as_record(item.get("spots_by_month", item.get("SpotsByMonth")))
         seconds = as_record(item.get("seconds_by_month", item.get("SecondsByMonth")))
         if not start and not end and not amount:
@@ -491,6 +494,7 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
                 "start": start,
                 "end": end,
                 "amount": amount,
+                "booked_amount": booked_amount,
                 "line_kind": "spot",
                 "products": _ref_names(item.get("Products") or item.get("Product")),
                 "spots_by_month": {key: float(as_num(val)) for key, val in spots.items()} or None,
@@ -588,15 +592,32 @@ def normalize_revenue_months(payload: Any) -> list[dict[str, Any]]:
             continue
         start, end = _month_bounds(year, month)
         station = as_str(item.get("StationShortName") or item.get("Station") or "ALL") or "ALL"
-        spot = float(as_num(item.get("SpotGrossAmount") or item.get("SpotNetAmount")))
-        charge = float(as_num(item.get("ChargeGrossAmount") or item.get("ChargeNetAmount")))
-        other = float(as_num(item.get("SponsorshipGrossAmount"))) + float(as_num(item.get("WebGrossAmount")))
-        net = float(as_num(item.get("NetAmount") or item.get("GrossAmount")))
-        parts = [("spot", spot), ("charge", charge), ("other", other)]
-        if net and not any(amount for _, amount in parts):
-            parts = [("spot", net)]
-        for kind, amount in parts:
-            if not amount:
+        spot_gross = float(as_num(item.get("SpotGrossAmount") or item.get("SpotNetAmount")))
+        charge_gross = float(as_num(item.get("ChargeGrossAmount") or item.get("ChargeNetAmount")))
+        other_gross = float(as_num(item.get("SponsorshipGrossAmount"))) + float(as_num(item.get("WebGrossAmount")))
+        booked = spot_gross + charge_gross + other_gross
+        discount = float(as_num(item.get("DiscountAmount")))
+        net = float(as_num(item.get("NetAmount")))
+        if not net:
+            gross = float(as_num(item.get("GrossAmount"))) or booked
+            if gross or discount:
+                net = max(gross - discount, 0.0)
+        alloc = net if net else booked
+        if not alloc and not booked:
+            continue
+        mix = [("spot", spot_gross), ("charge", charge_gross), ("other", other_gross)]
+        mix_total = sum(value for _, value in mix)
+        parts = mix if mix_total else [("spot", alloc)]
+        for kind, gross in parts:
+            if mix_total:
+                if not gross:
+                    continue
+                amount = alloc * (gross / mix_total)
+                booked_part = gross
+            else:
+                amount = alloc
+                booked_part = booked or alloc
+            if not amount and not booked_part:
                 continue
             lines.append(
                 {
@@ -605,6 +626,7 @@ def normalize_revenue_months(payload: Any) -> list[dict[str, Any]]:
                     "start": start,
                     "end": end,
                     "amount": amount,
+                    "booked_amount": booked_part,
                     "line_kind": kind,
                     "products": [],
                     "spots_by_month": None,

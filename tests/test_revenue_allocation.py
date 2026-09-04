@@ -218,3 +218,85 @@ def test_normalize_revenue_months_splits_spot_and_charge():
     summary = summarize_allocation({"TotalValue": 7000, "lines": lines}, periods)
     assert summary["mismatch"] is False
     assert summary["allocated_total"] == 7000.0
+
+
+def test_booked_analysis_scales_down_to_contract_total_after_missed_spots():
+    lines = normalize_revenue_months(
+        {
+            "Success": True,
+            "Data": {
+                "Items": [
+                    {
+                        "StationShortName": "KCBI-FM",
+                        "Year": 2026,
+                        "Month": 1,
+                        "SpotGrossAmount": 174081.78,
+                        "ChargeGrossAmount": 0,
+                        "NetAmount": 174081.78,
+                    },
+                    {
+                        "StationShortName": "KCBI-FM",
+                        "Year": 2026,
+                        "Month": 2,
+                        "SpotGrossAmount": 174081.78,
+                        "ChargeGrossAmount": 0,
+                        "NetAmount": 174081.78,
+                    },
+                ]
+            },
+        }
+    )
+    assert abs(sum(row["amount"] for row in lines) - 348163.56) < 0.01
+    periods = allocate_revenue(
+        {
+            "contract_id": 56,
+            "contract_cd": "1078",
+            "kind": "booked",
+            "fallback_amount": 342179.64,
+            "lines": lines,
+        }
+    )
+    allocated = round(sum(row["amount"] for row in periods), 2)
+    assert allocated == 342179.64
+    summary = summarize_allocation({"TotalValue": 342179.64, "lines": lines}, periods)
+    assert summary["mismatch"] is False
+    from app.sync.planner import deal_properties
+
+    props = deal_properties(
+        {
+            "ID": 56,
+            "ContractCD": "1078",
+            "Description": "Insight for Living",
+            "TotalValue": 342179.64,
+            "IsContract": True,
+            "StartDate": "2026-01-01",
+            "EndDate": "2027-11-30",
+            "lines": lines,
+        }
+    )
+    assert props["amount"] == 342179.64
+    assert props["aquira_allocated_amount"] == 342179.64
+    assert props["aquira_booked_amount"] == 348163.56
+    assert props["aquira_amount_mismatch"] is False
+
+
+def test_spot_line_prefers_total_amount_over_booked():
+    from app.aquira.normalize import normalize_spot_lines
+
+    lines = normalize_spot_lines(
+        {
+            "Entity": {
+                "SpotLines": [
+                    {
+                        "StartDate": "2026-01-01",
+                        "EndDate": "2026-01-31",
+                        "BookedTotalAmount": 1000,
+                        "TotalAmount": 800,
+                        "SelectedStationsCombined": [{"ID": 10, "Name": "KCBI"}],
+                    }
+                ]
+            }
+        }
+    )
+    assert lines[0]["amount"] == 800
+    assert lines[0]["booked_amount"] == 1000

@@ -101,6 +101,33 @@ def _period_row(
     }
 
 
+def _scale_down_to_total(periods: list[dict[str, Any]], target: Any) -> list[dict[str, Any]]:
+    """Booked-if-all-play often exceeds contract Total Amount after missed spots. Scale down only."""
+    target_d = _round_money(_money(target))
+    if not periods or target_d <= 0:
+        return periods
+    allocated = sum((_money(period.get("amount")) for period in periods), Decimal("0"))
+    if allocated <= target_d + MISMATCH_TOLERANCE:
+        return periods
+    factor = target_d / allocated
+    running = Decimal("0")
+    scaled: list[dict[str, Any]] = []
+    for idx, period in enumerate(periods):
+        old = _money(period.get("amount"))
+        if idx == len(periods) - 1:
+            new_amt = target_d - running
+        else:
+            new_amt = _round_money(old * factor)
+            running += new_amt
+        ratio = (new_amt / old) if old else Decimal("0")
+        row = dict(period)
+        row["amount"] = float(new_amt)
+        row["spot_amount"] = float(_round_money(_money(period.get("spot_amount")) * ratio))
+        row["charge_amount"] = float(_round_money(_money(period.get("charge_amount")) * ratio))
+        scaled.append(row)
+    return scaled
+
+
 def allocate_revenue(normalized: dict[str, Any]) -> list[dict[str, Any]]:
     """Allocate spot lines and charge lines across the months each line actually covers."""
     contract_id = normalized.get("contract_id")
@@ -181,10 +208,13 @@ def allocate_revenue(normalized: dict[str, Any]) -> list[dict[str, Any]]:
                 bucket["station"] = station
             running += share
 
-    return [
-        _period_row(c_id, month, station_id, bucket, kind, contract_cd)
-        for (c_id, month, station_id), bucket in sorted(totals.items())
-    ]
+    return _scale_down_to_total(
+        [
+            _period_row(c_id, month, station_id, bucket, kind, contract_cd)
+            for (c_id, month, station_id), bucket in sorted(totals.items())
+        ],
+        normalized.get("fallback_amount"),
+    )
 
 
 def summarize_allocation(contract: dict[str, Any], periods: list[dict[str, Any]]) -> dict[str, Any]:

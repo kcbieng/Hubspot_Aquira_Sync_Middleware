@@ -126,6 +126,7 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
         "aquira_line_total": contract.get("line_total") if contract.get("line_total") is not None else None,
         "aquira_spot_total": contract.get("spot_total") if contract.get("spot_total") is not None else None,
         "aquira_charge_total": contract.get("charge_total") if contract.get("charge_total") is not None else None,
+        "aquira_booked_amount": contract.get("booked_total") if contract.get("booked_total") is not None else None,
         "aquira_amount_delta": contract.get("amount_delta") if contract.get("amount_delta") is not None else None,
         "aquira_amount_mismatch": bool(contract.get("amount_mismatch")),
     }
@@ -245,10 +246,14 @@ def plan_contacts(
 def attach_revenue_summary(contract: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     periods = allocate_revenue(contract_revenue_input(contract))
     summary = summarize_allocation(contract, periods)
+    booked = 0.0
+    for line in contract.get("lines") or []:
+        booked += float(line.get("booked_amount") or line.get("amount") or 0)
     contract["allocated_total"] = summary["allocated_total"]
     contract["line_total"] = summary["line_total"]
     contract["spot_total"] = summary["spot_total"]
     contract["charge_total"] = summary["charge_total"]
+    contract["booked_total"] = round(booked, 2) if booked else summary["line_total"]
     contract["amount_delta"] = summary["delta"]
     contract["amount_mismatch"] = summary["mismatch"]
     contract["amount_warning"] = summary["warning"]

@@ -72,6 +72,7 @@ DEAL_PROPS = [
     {"name": "aquira_line_total", "label": "Aquira line total", "type": "number", "fieldType": "number"},
     {"name": "aquira_spot_total", "label": "Aquira spot total", "type": "number", "fieldType": "number"},
     {"name": "aquira_charge_total", "label": "Aquira charge total", "type": "number", "fieldType": "number"},
+    {"name": "aquira_booked_amount", "label": "Aquira booked amount (if all spots play)", "type": "number", "fieldType": "number"},
     {"name": "aquira_amount_delta", "label": "Aquira amount delta", "type": "number", "fieldType": "number"},
     {
         "name": "aquira_amount_mismatch",
@@ -896,6 +897,7 @@ class HubSpotClient:
                 "aquira_line_total",
                 "aquira_spot_total",
                 "aquira_charge_total",
+                "aquira_booked_amount",
                 "aquira_amount_delta",
                 "aquira_amount_mismatch",
             ],
