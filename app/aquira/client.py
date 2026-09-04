@@ -108,53 +108,34 @@ class AquiraSessionClient:
                 "Aquira password could not be decrypted. Re-enter it in Settings or set AQUIRA_PASSWORD in the stack."
             )
         logger.info("Aquira login as %s (password_len=%s)", user, len(password))
-        payloads = [
-            {"Username": user, "Password": password},
-            {"UserName": user, "Password": password},
-        ]
-        last_error: AquiraApiError | None = None
-        for index, payload in enumerate(payloads):
-            try:
-                self.client.cookies.clear()
-            except Exception:
-                pass
-            if index:
-                try:
-                    self.client.delete("/Session/Delete")
-                except Exception:
-                    pass
-            response = self.client.post("/Session/Post", json=payload)
-            try:
-                data = response.json()
-            except Exception:
-                data = {}
-            if not isinstance(data, dict):
-                data = {}
-            success = data.get("Success")
-            accepted = response.status_code < 400 and success is not False and (
-                success is True or bool(data.get("Entity") or data.get("SessionID"))
-            )
-            if accepted:
-                self.logged_in = True
-                entity = data.get("Entity") if isinstance(data.get("Entity"), dict) else {}
-                self.version = str(entity.get("WebApiVersion") or entity.get("AquiraVersion") or data.get("name") or "") or None
-                logger.info("Aquira session opened (version=%s)", self.version)
-                return data
-            last_error = AquiraApiError(
-                _login_error_message(data, response.status_code),
-                error=data.get("Error"),
-                error_name=data.get("ErrorName"),
-                errors=data.get("Errors"),
-            )
-            logger.warning(
-                "Aquira login attempt %s failed: %s error=%s error_name=%s error_text=%s",
-                index + 1,
-                last_error,
-                data.get("Error"),
-                data.get("ErrorName"),
-                data.get("ErrorText") or data.get("Errors"),
-            )
-        raise last_error or AquiraApiError("Aquira login failed")
+        payload = {"Username": user, "Password": password}
+        try:
+            self.client.cookies.clear()
+        except Exception:
+            pass
+        response = self.client.post("/Session/Post", json=payload)
+        try:
+            data = response.json()
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        success = data.get("Success")
+        accepted = response.status_code < 400 and success is not False and (
+            success is True or bool(data.get("Entity") or data.get("SessionID"))
+        )
+        if accepted:
+            self.logged_in = True
+            entity = data.get("Entity") if isinstance(data.get("Entity"), dict) else {}
+            self.version = str(entity.get("WebApiVersion") or entity.get("AquiraVersion") or data.get("name") or "") or None
+            logger.info("Aquira session opened (version=%s)", self.version)
+            return data
+        raise AquiraApiError(
+            _login_error_message(data, response.status_code),
+            error=data.get("Error"),
+            error_name=data.get("ErrorName"),
+            errors=data.get("Errors"),
+        )
 
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         response = self.client.request(method, path, **kwargs)
@@ -515,6 +496,14 @@ def test_aquira_connection(settings=None) -> dict[str, Any]:
             "version": version,
         }
     except AquiraApiError as exc:
+        hint = None
+        if exc.error in (-7, "-7") or (exc.error_name or "").lower() == "loginfailed":
+            hint = (
+                f"Aquira rejected user {settings.aquira_username!r} (LoginFailed / -7). "
+                "This is Aquira auth, not HubSpot. Check that the user is Current/Enabled, "
+                "not locked after failed logins, and that the password in Portainer or Settings "
+                "matches. Confirm by logging into Aquira as that user, then Test Aquira again."
+            )
         return {
             "status": "error",
             "mode": "live",
@@ -523,6 +512,7 @@ def test_aquira_connection(settings=None) -> dict[str, Any]:
             "error_name": exc.error_name,
             "errors": exc.errors,
             "username": settings.aquira_username,
+            "hint": hint,
         }
     except Exception as exc:
         return {"status": "error", "mode": "live", "message": str(exc)}
