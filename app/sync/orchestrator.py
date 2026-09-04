@@ -393,6 +393,11 @@ class SyncOrchestrator:
 
     def apply_item(self, item: dict[str, Any], aquira: Any | None, hubspot: Any | None, lookup: dict[tuple[str, str], str]) -> dict[str, Any]:
         if item.get("action") == "skip":
+            ident = item.get("hubspotId")
+            if ident:
+                lookup[(item["entityType"], str(item.get("aquiraId") or ""))] = str(ident)
+                if hubspot is not None:
+                    self._apply_associations(item, hubspot, lookup)
             return item
 
         if item.get("writeback") and item.get("action") == "create" and item.get("entityType") == "client":
@@ -432,31 +437,38 @@ class SyncOrchestrator:
         record = hubspot.upsert_crm(hs_type, properties, item.get("hubspotId"))
         item["hubspotId"] = record.get("id")
         lookup[(item["entityType"], str(item.get("aquiraId") or ""))] = str(record.get("id"))
+        self._apply_associations(item, hubspot, lookup)
+        return item
 
+    def _apply_associations(self, item: dict[str, Any], hubspot: Any, lookup: dict[tuple[str, str], str]) -> None:
         associations = item.get("associations") or {}
+        hubspot_id = str(item.get("hubspotId") or "")
+        if not hubspot_id:
+            return
         if item.get("entityType") == "company" and associations.get("parentCompanyId"):
             parent = lookup.get(("company", str(associations.get("parentCompanyId"))))
-            if parent and parent != item["hubspotId"]:
-                hubspot.associate("companies", item["hubspotId"], "companies", parent, 14)
+            if parent and parent != hubspot_id:
+                hubspot.associate("companies", hubspot_id, "companies", parent, 14)
+                hubspot.associate("companies", parent, "companies", hubspot_id, 13)
         if item.get("entityType") == "contact":
             for company_id in associations.get("companyIds") or []:
                 resolved = lookup.get(("company", str(company_id)))
                 if resolved:
-                    hubspot.associate("contacts", item["hubspotId"], "companies", resolved, 1)
+                    hubspot.associate("contacts", hubspot_id, "companies", resolved, 1)
         if item.get("entityType") == "deal":
             for company_id in associations.get("companyIds") or []:
                 resolved = lookup.get(("company", str(company_id)))
                 if resolved:
-                    hubspot.associate("deals", item["hubspotId"], "companies", resolved, 5)
+                    hubspot.associate("deals", hubspot_id, "companies", resolved, 5)
         if item.get("entityType") == "revenue_period":
+            hs_type = self._hubspot_type("revenue_period", hubspot)
             deal_id = lookup.get(("deal", str(associations.get("dealId") or "")))
             if deal_id:
-                hubspot.associate(hs_type, item["hubspotId"], "deals", deal_id)
+                hubspot.associate(hs_type, hubspot_id, "deals", deal_id)
             for company_id in associations.get("companyIds") or []:
                 resolved = lookup.get(("company", str(company_id)))
                 if resolved:
-                    hubspot.associate(hs_type, item["hubspotId"], "companies", resolved)
-        return item
+                    hubspot.associate(hs_type, hubspot_id, "companies", resolved)
 
     def run(
         self,
@@ -509,6 +521,7 @@ class SyncOrchestrator:
             from app.mapping.teams import apply_team_ids, team_attribute_names
 
             teams_by_name: dict[str, str] = {}
+            teams_by_id: dict[str, str] = {}
             owner_team_by_owner_id: dict[str, str] = {}
             if live_hubspot is not None and hasattr(live_hubspot, "list_teams"):
                 try:
@@ -519,8 +532,10 @@ class SyncOrchestrator:
                         ident = str(team.get("id") or "")
                         if name and ident:
                             teams_by_name[normalize_team_key(name)] = ident
+                            teams_by_id[ident] = name
                 except Exception:
                     teams_by_name = {}
+                    teams_by_id = {}
             if live_hubspot is not None and hasattr(live_hubspot, "owner_primary_team_map"):
                 try:
                     owner_team_by_owner_id = live_hubspot.owner_primary_team_map() or {}
@@ -536,6 +551,7 @@ class SyncOrchestrator:
                 owner_team_by_owner_id=owner_team_by_owner_id,
                 team_owner_by_team_id=self._team_owner_map(repo),
                 owner_by_name=self._owner_by_name(repo),
+                teams_by_id=teams_by_id,
             )
 
             items = self.build_plan(

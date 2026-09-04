@@ -830,6 +830,8 @@ def clients_from_contracts(contracts: list[dict[str, Any]]) -> list[dict[str, An
             if advertiser_name and _is_fallback_client_name(row.get("Name"), ident):
                 row["Name"] = str(advertiser_name)
             row["IsAdvertiser"] = True
+            if account_id and int(account_id) != ident:
+                row["AccountID"] = int(account_id)
             if account_id and int(account_id) == ident:
                 row["IsAccount"] = True
     return list(by_id.values())

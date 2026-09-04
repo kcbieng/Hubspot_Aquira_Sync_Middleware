@@ -236,6 +236,7 @@ def apply_team_ids(
     owner_team_by_owner_id: dict[str, str] | None = None,
     team_owner_by_team_id: dict[str, str] | None = None,
     owner_by_name: dict[str, str] | None = None,
+    teams_by_id: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     names = attribute_names or team_attribute_names()
     clients = catalog.get("clients") or []
@@ -247,10 +248,20 @@ def apply_team_ids(
     owner_team_by_owner_id = owner_team_by_owner_id or {}
     team_owner_by_team_id = team_owner_by_team_id or {}
     owner_by_name = owner_by_name or {}
+    teams_by_id = {str(key): str(value) for key, value in (teams_by_id or {}).items() if key and value}
 
-    def set_team(entity: dict[str, Any], team_id: str | None, label: str | None) -> str | None:
-        entity["HubSpotTeam"] = str(label or "").strip()
+    def set_team(entity: dict[str, Any], team_id: str | None, label: str | None = None) -> str | None:
+        if not team_id:
+            return None
+        official = teams_by_id.get(str(team_id)) or ""
+        if not official:
+            text = str(label or "").strip()
+            if text and teams_by_name and str(teams_by_name.get(normalize_team_key(text)) or "") == str(team_id):
+                official = text
+            elif text and mapping and str(mapping.get(normalize_team_key(text)) or mapping.get(qualified_key("salesteam", text)) or "") == str(team_id):
+                official = text
         entity["hubspot_team_id"] = team_id
+        entity["HubSpotTeam"] = official
         return team_id
 
     def assign_from_attribute(entity: dict[str, Any], label: str | None) -> str | None:
@@ -275,13 +286,12 @@ def apply_team_ids(
         if not team_id and ident is not None:
             team_id = resolve_mapped(f"Sales rep {ident}", "salesrep", mapping)
         if team_id:
-            return set_team(entity, team_id, label)
+            return set_team(entity, team_id)
         owner_id = owner_by_aquira.get(str(ident or ""))
         if owner_id:
             auto = owner_team_by_owner_id.get(str(owner_id))
             if auto:
-                teams = _sales_teams_for(entity, reps_by_id)
-                return set_team(entity, auto, label or (teams[0] if teams else ""))
+                return set_team(entity, auto)
         return None
 
     def parent_first(client: dict[str, Any]) -> tuple[int, str]:

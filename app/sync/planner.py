@@ -204,8 +204,9 @@ def plan_companies(clients: list[dict[str, Any]], existing_by_aquira: dict[str, 
                 if current.get(field) not in (None, ""):
                     props[field] = current.get(field)
         account_id = None
-        if client.get("IsAdvertiser") and client.get("AccountID") and client.get("AccountID") != client.get("ID"):
-            account_id = str(client.get("AccountID"))
+        parent = client.get("AccountID")
+        if parent and str(parent) != str(client.get("ID")):
+            account_id = str(parent)
         items.append(
             plan_upsert(
                 "company",

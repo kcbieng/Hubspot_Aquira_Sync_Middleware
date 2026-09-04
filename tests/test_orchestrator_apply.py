@@ -130,3 +130,38 @@ def test_whatif_does_not_write():
     )
     assert hubspot.upserts == []
     assert aquira.puts == []
+
+
+def test_skip_still_associates_parent_company():
+    orchestrator = SyncOrchestrator()
+    aquira = FakeAquira()
+    hubspot = FakeHubSpot()
+    catalog = {
+        "clients": [
+            {"ID": 101, "Name": "Agency", "IsAccount": True, "IsAdvertiser": False, "Attributes": {}},
+            {"ID": 202, "Name": "Advertiser", "IsAccount": False, "IsAdvertiser": True, "AccountID": 101, "Attributes": {}},
+        ],
+        "contacts": [],
+        "contracts": [],
+        "reps": [],
+    }
+    existing = {
+        "companies": [
+            {"id": "hs-agency", "properties": {"aquira_id": "101", "name": "Agency"}},
+            {"id": "hs-adv", "properties": {"aquira_id": "202", "name": "Advertiser"}},
+        ],
+        "contacts": [],
+        "deals": [],
+        "revenue": [],
+        "unsynced": [],
+    }
+    orchestrator.run(
+        SyncContext(trigger="test", whatif=False, entities=["companies"]),
+        aquira=aquira,
+        hubspot=hubspot,
+        catalog=catalog,
+        existing=existing,
+    )
+    pairs = {(row[1], row[3], row[4]) for row in hubspot.associations}
+    assert ("hs-adv", "hs-agency", 14) in pairs
+    assert ("hs-agency", "hs-adv", 13) in pairs

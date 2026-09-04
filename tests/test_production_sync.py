@@ -75,6 +75,18 @@ def test_plan_companies_accounts_before_child_advertisers():
     assert items[1]["associations"]["parentCompanyId"] == "101"
 
 
+def test_plan_companies_parents_advertiser_even_without_flag():
+    items = plan_companies(
+        [
+            {"ID": 101, "Name": "Agency", "IsAccount": True, "IsAdvertiser": False},
+            {"ID": 202, "Name": "Advertiser Co", "IsAccount": False, "IsAdvertiser": False, "AccountID": 101},
+        ],
+        {},
+    )
+    child = next(item for item in items if item["aquiraId"] == "202")
+    assert child["associations"]["parentCompanyId"] == "101"
+
+
 def test_plan_companies_skips_when_extra_hubspot_keys_present():
     client = {
         "ID": 101,

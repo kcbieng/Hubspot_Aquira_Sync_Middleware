@@ -270,7 +270,7 @@ def test_advertiser_name_does_not_auto_match_hubspot_team():
         "contracts": [],
     }
     apply_team_ids(catalog, {}, teams_by_name={"kcbi sales": "t-1"})
-    assert catalog["clients"][0]["hubspot_team_id"] is None
+    assert catalog["clients"][0].get("hubspot_team_id") is None
 
 
 def test_child_advertiser_inherits_account_team():
@@ -339,7 +339,7 @@ def test_conflicting_product_codes_do_not_assign():
         "contracts": [{"ID": 1, "Attributes": {}, "ProductNames": ["KCBI-AM", "KLTY-FM"]}],
     }
     apply_team_ids(catalog, {"product:kcbi am": "t-1", "product:klty fm": "t-2"})
-    assert catalog["contracts"][0]["hubspot_team_id"] is None
+    assert catalog["contracts"][0].get("hubspot_team_id") is None
 
 
 def test_sales_rep_map_assigns_team():
@@ -348,8 +348,10 @@ def test_sales_rep_map_assigns_team():
         "contacts": [{"ID": 9, "ClientID": 2, "FirstName": "Pat", "LastName": "Seller", "Attributes": {}}],
         "contracts": [{"ID": 1, "AdvertiserID": 2, "AccountID": 2, "SalesRepID": 7, "SalesRepName": "Jane Doe", "Attributes": {}}],
     }
-    apply_team_ids(catalog, {"salesrep:jane doe": "t-rep"})
+    apply_team_ids(catalog, {"salesrep:jane doe": "t-rep"}, teams_by_id={"t-rep": "Program Support"})
     assert catalog["clients"][0]["hubspot_team_id"] == "t-rep"
+    assert catalog["clients"][0]["HubSpotTeam"] == "Program Support"
+    assert company_properties(catalog["clients"][0])["aquira_hubspot_team"] == "Program Support"
     assert catalog["contacts"][0]["hubspot_team_id"] == "t-rep"
     assert catalog["contracts"][0]["hubspot_team_id"] == "t-rep"
 
@@ -360,8 +362,16 @@ def test_sales_rep_uses_mapped_owner_primary_team():
         "contacts": [],
         "contracts": [{"ID": 1, "SalesRepID": 7, "SalesRepName": "Jane Doe", "Attributes": {}}],
     }
-    apply_team_ids(catalog, {}, owner_by_aquira={"7": "hs-jane"}, owner_team_by_owner_id={"hs-jane": "t-owner"})
+    apply_team_ids(
+        catalog,
+        {},
+        owner_by_aquira={"7": "hs-jane"},
+        owner_team_by_owner_id={"hs-jane": "t-owner"},
+        teams_by_id={"t-owner": "Program Support"},
+    )
     assert catalog["contracts"][0]["hubspot_team_id"] == "t-owner"
+    assert catalog["contracts"][0]["HubSpotTeam"] == "Program Support"
+    assert catalog["contracts"][0]["HubSpotTeam"] != "Jane Doe"
 
 
 def test_aquira_sales_team_matches_hubspot_team_name():

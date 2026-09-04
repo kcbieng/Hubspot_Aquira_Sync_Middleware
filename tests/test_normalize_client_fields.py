@@ -66,3 +66,5 @@ def test_clients_from_contracts_seed_account_and_advertiser():
     assert by_id[101]["Name"] == "PCBC Agency"
     assert by_id[106]["IsAdvertiser"] is True
     assert by_id[106]["Name"] == "Park Cities Baptist"
+    assert by_id[106]["AccountID"] == 101
+    assert by_id[101].get("AccountID") in (None, 101)
