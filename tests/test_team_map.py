@@ -57,12 +57,13 @@ def test_contacts_inherit_client_team_then_contract():
     assert catalog["contacts"][0]["hubspot_team_id"] == "t-1"
     assert catalog["contracts"][0]["hubspot_team_id"] == "t-1"
     props = contact_properties(catalog["contacts"][0])
-    assert props["hubspot_team_id"] == "t-1"
+    assert "hubspot_team_id" not in props
+    assert props["aquira_hubspot_team"] == "KCBI Sales"
     items = plan_contacts(catalog["contacts"], {}, {})
-    assert items[0]["properties"]["hubspot_team_id"] == "t-1"
+    assert "hubspot_team_id" not in items[0]["properties"]
     company_items = plan_companies(catalog["clients"], {})
-    assert company_items[0]["properties"]["hubspot_team_id"] == "t-1"
-    assert company_properties(catalog["clients"][0])["hubspot_team_id"] == "t-1"
+    assert "hubspot_team_id" not in company_items[0]["properties"]
+    assert company_properties(catalog["clients"][0])["aquira_hubspot_team"] == "KCBI Sales"
 
 
 def test_hubspot_team_lookup_attribute_matches_program_support():
@@ -102,9 +103,9 @@ def test_hubspot_team_lookup_attribute_matches_program_support():
     apply_team_ids(catalog, {}, teams_by_name={"program support": "t-ps"})
     assert catalog["clients"][0]["hubspot_team_id"] == "t-ps"
     assert catalog["contacts"][0]["hubspot_team_id"] == "t-ps"
-    assert company_properties(catalog["clients"][0])["hubspot_team_id"] == "t-ps"
+    assert "hubspot_team_id" not in company_properties(catalog["clients"][0])
     assert company_properties(catalog["clients"][0])["aquira_hubspot_team"] == "Program Support"
-    assert contact_properties(catalog["contacts"][0])["hubspot_team_id"] == "t-ps"
+    assert "hubspot_team_id" not in contact_properties(catalog["contacts"][0])
 
 
 def test_team_default_owner_fills_when_sales_rep_is_unmapped():
@@ -229,7 +230,25 @@ def test_station_fallback_maps_contract_team():
     apply_team_ids(catalog, {"kcbi": "t-station"})
     assert catalog["contracts"][0]["hubspot_team_id"] == "t-station"
     items = plan_deals(catalog["contracts"], {}, {})
-    assert items[0]["properties"]["hubspot_team_id"] == "t-station"
+    assert "hubspot_team_id" not in items[0]["properties"]
+    assert items[0]["properties"]["aquira_hubspot_team"] == "KCBI"
+
+
+def test_prepare_properties_drops_read_only_team_id():
+    from app.hubspot.client import HubSpotClient
+
+    client = HubSpotClient.__new__(HubSpotClient)
+    client._prop_names = {"companies": {"name", "aquira_id", "hubspot_owner_id", "aquira_hubspot_team"}}
+    client.access_token = "token"
+    out = HubSpotClient.prepare_properties(
+        client,
+        "companies",
+        {"name": "A New Beginning", "hubspot_team_id": "t-ps", "hubspot_owner_id": "hs-clint", "aquira_hubspot_team": "Program Support"},
+    )
+    assert "hubspot_team_id" not in out
+    assert out["hubspot_owner_id"] == "hs-clint"
+    assert out["aquira_hubspot_team"] == "Program Support"
+
 
 
 def test_advertiser_name_maps_when_no_attribute():

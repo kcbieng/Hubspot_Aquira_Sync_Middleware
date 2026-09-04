@@ -127,6 +127,7 @@ OBJECT_GROUPS = {
     "deal": "dealinformation",
 }
 NATIVE_PROPERTIES = {"hubspot_team_id", "hubspot_owner_id", "hs_object_id"}
+READ_ONLY_PROPERTIES = {"hubspot_team_id", "hs_object_id"}
 
 
 def _stringify(properties: dict[str, Any]) -> dict[str, str]:
@@ -455,10 +456,10 @@ class HubSpotClient:
             }
             if self._create_defined_property(object_type, definition):
                 known.add(name)
-        dropped = [name for name in properties if name not in known]
+        dropped = [name for name in properties if name not in known or name in READ_ONLY_PROPERTIES]
         if dropped:
-            logger.warning("Dropping unknown HubSpot %s properties %s", object_type, dropped)
-        return {key: value for key, value in properties.items() if key in known}
+            logger.warning("Dropping unknown or read-only HubSpot %s properties %s", object_type, dropped)
+        return {key: value for key, value in properties.items() if key in known and key not in READ_ONLY_PROPERTIES}
 
     def create_property(
         self,
@@ -762,6 +763,14 @@ class HubSpotClient:
                 if found:
                     updated = self._request("PATCH", f"/crm/v3/objects/{object_type}/{found[0]['id']}", json=payload)
                     return {"id": str(updated.get("id") or found[0]["id"]), "properties": updated.get("properties") or payload["properties"]}
+            if err.status == 400 and "READ_ONLY_VALUE" in (err.body or ""):
+                trimmed = {key: value for key, value in properties.items() if key not in READ_ONLY_PROPERTIES}
+                for name in READ_ONLY_PROPERTIES:
+                    trimmed.pop(name, None)
+                if "hubspot_team_id" in (err.body or ""):
+                    trimmed.pop("hubspot_team_id", None)
+                if trimmed and trimmed != properties:
+                    return self.upsert_crm(object_type, trimmed, existing_id)
             if err.status == 400 and "PROPERTY_DOESNT_EXIST" in (err.body or ""):
                 self._prop_names.pop(object_type, None)
                 trimmed = self.prepare_properties(object_type, properties)

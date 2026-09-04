@@ -76,8 +76,6 @@ def company_properties(client: dict[str, Any]) -> dict[str, Any]:
         "aquira_party_type": party_type_for_client(client),
         "aquira_version": client.get("Version"),
     }
-    if client.get("hubspot_team_id"):
-        props["hubspot_team_id"] = str(client.get("hubspot_team_id"))
     if client.get("HubSpotTeam"):
         props["aquira_hubspot_team"] = str(client.get("HubSpotTeam"))
     if client.get("hubspot_owner_id"):
@@ -95,8 +93,6 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
         "aquira_entity_type": "contact",
         "aquira_client_id": str(contact.get("ClientID") or ""),
     }
-    if contact.get("hubspot_team_id"):
-        props["hubspot_team_id"] = str(contact.get("hubspot_team_id"))
     if contact.get("HubSpotTeam"):
         props["aquira_hubspot_team"] = str(contact.get("HubSpotTeam"))
     if contact.get("hubspot_owner_id"):
@@ -140,8 +136,6 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
         "aquira_amount_mismatch": bool(contract.get("amount_mismatch")),
     }
     props = {key: value for key, value in props.items() if value is not None}
-    if contract.get("hubspot_team_id"):
-        props["hubspot_team_id"] = str(contract.get("hubspot_team_id"))
     if contract.get("HubSpotTeam"):
         props["aquira_hubspot_team"] = str(contract.get("HubSpotTeam"))
     if contract.get("hubspot_owner_id"):
