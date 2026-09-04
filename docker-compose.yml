@@ -1,18 +1,15 @@
 services:
   db:
     image: postgres:16-alpine
-    container_name: aquira-hubspot-db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: aquira_hubspot
-      POSTGRES_USER: middleware
-      POSTGRES_PASSWORD: middleware_password
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-aquira_hubspot}
+      POSTGRES_USER: ${POSTGRES_USER:-middleware}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-middleware_password}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U middleware -d aquira_hubspot"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-middleware} -d ${POSTGRES_DB:-aquira_hubspot}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,43 +20,45 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: aquira-hubspot-middleware
+    image: aquira-hubspot-middleware:latest
     depends_on:
       db:
         condition: service_healthy
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${MIDDLEWARE_PORT:-8080}:8080"
     environment:
       TZ: America/Chicago
       AQUIRA_BASE_URL: ${AQUIRA_BASE_URL:-https://aquira2go.kcbieng.org/Aquira_WebAPI}
       AQUIRA_USERNAME: ${AQUIRA_USERNAME:-}
       AQUIRA_PASSWORD: ${AQUIRA_PASSWORD:-}
       HUBSPOT_ACCESS_TOKEN: ${HUBSPOT_ACCESS_TOKEN:-}
-      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET:-dev-secret}
-      DATABASE_URL: ${DATABASE_URL:-postgresql://middleware:middleware_password@db:5432/aquira_hubspot}
-      SETTINGS_FERNET_KEY: ${SETTINGS_FERNET_KEY:-dev-change-me}
+      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://middleware:${POSTGRES_PASSWORD:-middleware_password}@db:5432/aquira_hubspot}
+      SETTINGS_FERNET_KEY: ${SETTINGS_FERNET_KEY:-}
       UI_USERNAME: ${UI_USERNAME:-admin}
       UI_PASSWORD: ${UI_PASSWORD:-admin}
       SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-30}
       WHATIF: ${WHATIF:-true}
       SYNC_CALLS: ${SYNC_CALLS:-false}
-      SYNC_CREATE_AQURA_CLIENT: ${SYNC_CREATE_AQURA_CLIENT:-true}
+      SYNC_CREATE_AQUIRA_CLIENT: ${SYNC_CREATE_AQUIRA_CLIENT:-true}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       BOOTSTRAP_HUBSPOT: ${BOOTSTRAP_HUBSPOT:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
     volumes:
-      - ./logs:/var/log/aquira
+      - app_logs:/var/log/aquira
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"]
       interval: 15s
       timeout: 10s
       retries: 5
-      start_period: 20s
+      start_period: 25s
     networks:
       - app-network
 
 volumes:
   postgres_data:
+  app_logs:
 
 networks:
   app-network:

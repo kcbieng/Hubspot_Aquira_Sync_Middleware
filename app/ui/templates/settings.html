@@ -8,22 +8,45 @@
       </div>
     </div>
 
+    {% if notice %}
+      <div class="alert alert-success">{{ notice }}</div>
+    {% endif %}
+    {% if error %}
+      <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+
     <form method="post" action="/ui/settings" class="row g-3">
       <div class="col-md-6">
         <label class="form-label" for="aquira_base_url">Aquira base URL</label>
         <input class="form-control" id="aquira_base_url" name="aquira_base_url" value="{{ settings.aquira_base_url }}">
       </div>
+      <div class="col-md-3">
+        <label class="form-label" for="aquira_username">Aquira username</label>
+        <input class="form-control" id="aquira_username" name="aquira_username" value="{{ settings.aquira_username }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="aquira_password">Aquira password</label>
+        <input class="form-control" id="aquira_password" name="aquira_password" type="password" placeholder="unchanged if blank" value="">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="hubspot_access_token">HubSpot private app token</label>
+        <input class="form-control" id="hubspot_access_token" name="hubspot_access_token" type="password" placeholder="unchanged if blank" value="">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="hubspot_client_secret">HubSpot webhook secret</label>
+        <input class="form-control" id="hubspot_client_secret" name="hubspot_client_secret" type="password" placeholder="unchanged if blank" value="">
+      </div>
       <div class="col-md-6">
         <label class="form-label" for="sync_interval_minutes">Sync interval minutes</label>
         <input class="form-control" id="sync_interval_minutes" name="sync_interval_minutes" type="number" value="{{ settings.sync_interval_minutes }}">
       </div>
-      <div class="col-md-6">
+      <div class="col-md-3">
         <label class="form-label" for="ui_username">UI username</label>
         <input class="form-control" id="ui_username" name="ui_username" value="{{ settings.ui_username }}">
       </div>
-      <div class="col-md-6">
+      <div class="col-md-3">
         <label class="form-label" for="ui_password">UI password</label>
-        <input class="form-control" id="ui_password" name="ui_password" type="password" value="{{ settings.ui_password }}">
+        <input class="form-control" id="ui_password" name="ui_password" type="password" value="">
       </div>
       <div class="col-md-12">
         <div class="form-check form-switch">
@@ -31,11 +54,44 @@
           <label class="form-check-label" for="whatif">PLAN ONLY — no writes</label>
         </div>
       </div>
+      <div class="col-md-4">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="sync_create_aquira_client" name="sync_create_aquira_client" {% if settings.sync_create_aquira_client %}checked{% endif %}>
+          <label class="form-check-label" for="sync_create_aquira_client">Create Aquira clients from new HubSpot companies</label>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="bootstrap_hubspot" name="bootstrap_hubspot" {% if settings.bootstrap_hubspot %}checked{% endif %}>
+          <label class="form-check-label" for="bootstrap_hubspot">Bootstrap HubSpot schema</label>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="sync_calls" name="sync_calls" {% if settings.sync_calls %}checked{% endif %}>
+          <label class="form-check-label" for="sync_calls">Sync calls (phase 1.1)</label>
+        </div>
+      </div>
       <div class="col-12 d-flex flex-wrap gap-2">
         <button type="submit" class="btn btn-primary">Save</button>
-        <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='/api/settings/test/aquira'">Test Aquira</button>
-        <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='/api/settings/test/hubspot'">Test HubSpot</button>
       </div>
     </form>
+    <div class="d-flex flex-wrap gap-2 mt-3">
+      <button type="button" class="btn btn-outline-secondary" id="test-aquira">Test Aquira</button>
+      <button type="button" class="btn btn-outline-secondary" id="test-hubspot">Test HubSpot</button>
+    </div>
+    <pre id="test-result" class="mt-3 d-none"></pre>
   </div>
+  <script>
+    async function test(path) {
+      const box = document.getElementById('test-result');
+      box.classList.remove('d-none');
+      box.textContent = 'Testing…';
+      const response = await fetch(path, { method: 'POST' });
+      const body = await response.json();
+      box.textContent = JSON.stringify(body, null, 2);
+    }
+    document.getElementById('test-aquira').addEventListener('click', () => test('/api/settings/test/aquira'));
+    document.getElementById('test-hubspot').addEventListener('click', () => test('/api/settings/test/hubspot'));
+  </script>
 {% endblock %}

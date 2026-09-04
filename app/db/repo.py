@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.db.models import AppSetting, DeadLetter, JobEvent, SyncCursor, SyncRun, SyncRunItem
+from app.db.models import AppSetting, DeadLetter, IdMap, JobEvent, OwnerMap, SyncCursor, SyncRun, SyncRunItem
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:
@@ -28,6 +28,7 @@ class Repo:
         if row is None:
             row = AppSetting(key=key)
         row.value_enc = value
+        row.updated_at = datetime.utcnow()
         self.session.add(row)
         self.session.commit()
 
@@ -35,7 +36,18 @@ class Repo:
         row = self.session.execute(select(AppSetting).where(AppSetting.key == key)).scalar_one_or_none()
         return row.value_enc if row else None
 
-    def set_cursor(self, job: str, last_started: str | datetime | None = None, last_finished: str | datetime | None = None, last_error: str | None = None, last_success_at: str | datetime | None = None) -> SyncCursor:
+    def all_settings(self) -> dict[str, str | None]:
+        rows = self.session.execute(select(AppSetting)).scalars().all()
+        return {row.key: row.value_enc for row in rows}
+
+    def set_cursor(
+        self,
+        job: str,
+        last_started: str | datetime | None = None,
+        last_finished: str | datetime | None = None,
+        last_error: str | None = None,
+        last_success_at: str | datetime | None = None,
+    ) -> SyncCursor:
         row = self.session.execute(select(SyncCursor).where(SyncCursor.job == job)).scalar_one_or_none()
         if row is None:
             row = SyncCursor(job=job)
@@ -62,7 +74,21 @@ class Repo:
         )
         self.session.commit()
 
-    def add_dead_letter(self, entity_type: str, aquira_id: str | int | None, error: str, payload: Any | None = None, attempts: int = 0) -> None:
+    def list_events(self, limit: int = 200) -> list[JobEvent]:
+        return (
+            self.session.execute(select(JobEvent).order_by(JobEvent.ts.desc()).limit(limit))
+            .scalars()
+            .all()
+        )
+
+    def add_dead_letter(
+        self,
+        entity_type: str,
+        aquira_id: str | int | None,
+        error: str,
+        payload: Any | None = None,
+        attempts: int = 0,
+    ) -> None:
         self.session.add(
             DeadLetter(
                 entity_type=entity_type,
@@ -81,7 +107,16 @@ class Repo:
         self.session.refresh(run)
         return run
 
-    def add_run_item(self, run_id: int, entity_type: str, aquira_id: str | int | None, hubspot_id: str | None, action: str, diff_json: Any | None = None, error: str | None = None) -> SyncRunItem:
+    def add_run_item(
+        self,
+        run_id: int,
+        entity_type: str,
+        aquira_id: str | int | None,
+        hubspot_id: str | None,
+        action: str,
+        diff_json: Any | None = None,
+        error: str | None = None,
+    ) -> SyncRunItem:
         item = SyncRunItem(
             run_id=run_id,
             entity_type=entity_type,
@@ -95,3 +130,56 @@ class Repo:
         self.session.commit()
         self.session.refresh(item)
         return item
+
+    def list_runs(self, limit: int = 50) -> list[SyncRun]:
+        return (
+            self.session.execute(select(SyncRun).order_by(SyncRun.started_at.desc()).limit(limit))
+            .scalars()
+            .all()
+        )
+
+    def get_run(self, run_id: int) -> SyncRun | None:
+        return self.session.get(SyncRun, run_id)
+
+    def list_run_items(self, run_id: int) -> list[SyncRunItem]:
+        return (
+            self.session.execute(select(SyncRunItem).where(SyncRunItem.run_id == run_id).order_by(SyncRunItem.id.asc()))
+            .scalars()
+            .all()
+        )
+
+    def latest_run(self) -> SyncRun | None:
+        return self.session.execute(select(SyncRun).order_by(SyncRun.started_at.desc()).limit(1)).scalar_one_or_none()
+
+    def upsert_id_map(
+        self,
+        entity_type: str,
+        aquira_id: str,
+        hubspot_object_type: str,
+        hubspot_id: str,
+        content_hash: str | None = None,
+        aquira_version: int | None = None,
+    ) -> IdMap:
+        row = self.session.execute(
+            select(IdMap).where(IdMap.entity_type == entity_type, IdMap.aquira_id == aquira_id)
+        ).scalar_one_or_none()
+        if row is None:
+            row = IdMap(entity_type=entity_type, aquira_id=aquira_id)
+        row.hubspot_object_type = hubspot_object_type
+        row.hubspot_id = hubspot_id
+        row.content_hash = content_hash
+        row.aquira_version = aquira_version
+        row.updated_at = datetime.utcnow()
+        self.session.add(row)
+        self.session.commit()
+        self.session.refresh(row)
+        return row
+
+    def get_id_maps(self, entity_type: str | None = None) -> list[IdMap]:
+        stmt = select(IdMap)
+        if entity_type:
+            stmt = stmt.where(IdMap.entity_type == entity_type)
+        return self.session.execute(stmt).scalars().all()
+
+    def list_owner_maps(self) -> list[OwnerMap]:
+        return self.session.execute(select(OwnerMap)).scalars().all()

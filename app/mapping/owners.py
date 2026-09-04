@@ -55,6 +55,12 @@ def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[di
                     best_match = owner
             if best_score >= 0.75:
                 chosen = best_match
+            elif not chosen:
+                last = aquira_name.split()[-1] if aquira_name.split() else ""
+                if last:
+                    last_matches = [owner for normalized_name, owner in owner_lookup_by_name if normalized_name.split() and normalized_name.split()[-1] == last]
+                    if len(last_matches) == 1:
+                        chosen = last_matches[0]
 
         suggestions.append(
             {

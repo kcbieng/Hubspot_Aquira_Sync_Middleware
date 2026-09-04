@@ -22,8 +22,10 @@ async def hubspot_webhook(
     try:
         body_json = json.loads(payload.decode("utf-8"))
         message_id = body_json.get("messageId")
+        events = body_json if isinstance(body_json, list) else body_json.get("events") or [body_json]
     except (ValueError, UnicodeDecodeError):
         message_id = None
+        events = []
 
     method = request.method.encode("utf-8")
     uri = str(request.url.path).encode("utf-8")
@@ -36,4 +38,11 @@ async def hubspot_webhook(
         return {"status": "duplicate", "messageId": message_id}
     if message_id:
         _SEEN_MESSAGE_IDS.add(message_id)
+
+    try:
+        from app.db.repo import Repo
+
+        Repo().add_event("webhook", "INFO", "HubSpot webhook accepted", {"messageId": message_id, "events": len(events) if isinstance(events, list) else 1})
+    except Exception:
+        pass
     return {"status": "accepted", "payload_bytes": str(len(payload))}

@@ -1,0 +1,13 @@
+.git
+.venv
+__pycache__
+.pytest_cache
+.mypy_cache
+*.pyc
+.env
+stack.env
+app.db
+logs
+Aquira_Swagger_docs.txt
+.vscode
+tests

@@ -14,7 +14,28 @@
       </div>
 
       <p class="text-muted mb-3">Trigger: {{ run.trigger }} • Started: {{ run.started_at }} • Finished: {{ run.finished_at }}</p>
-      {% if items %}
+      {% if run.summary_json %}<pre>{{ run.summary_json }}</pre>{% endif %}
+      {% if parsed %}
+        <div class="vstack gap-3">
+          {% for item in parsed %}
+            <div class="panel-card-soft p-3">
+              <div class="fw-semibold">{{ item.row.entity_type }} — {{ item.row.action }}{% if item.diff and item.diff.name %} • {{ item.diff.name }}{% endif %}</div>
+              <div class="small text-muted">Aquira: {{ item.row.aquira_id }} • HubSpot: {{ item.row.hubspot_id }}</div>
+              {% if item.diff and item.diff.diffs %}
+                <ul class="mb-0 mt-2">
+                  {% for diff in item.diff.diffs %}
+                    <li><code>{{ diff.field }}</code>: {{ diff.from }} → {{ diff.to }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              {% if item.row.diff_json %}
+                <details class="mt-2"><summary>Raw JSON</summary><pre>{{ item.row.diff_json }}</pre></details>
+              {% endif %}
+              {% if item.row.error %}<div class="text-danger mt-2">{{ item.row.error }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% elif items %}
         <div class="vstack gap-3">
           {% for item in items %}
             <div class="panel-card-soft p-3">

@@ -6,30 +6,53 @@
         <div class="text-uppercase small text-primary fw-bold mb-1">Ownership</div>
         <h2 class="mb-0">Owner mapping</h2>
       </div>
-      <button class="btn btn-primary btn-sm" type="button">Suggest matches</button>
     </div>
 
-    <div class="row g-3">
-      <div class="col-md-6">
-        <div class="panel-card-soft p-3 h-100">
-          <h5 class="mb-3">Aquira sales reps</h5>
-          <p class="text-muted small mb-3">Live lookup support is exposed through the API for this page.</p>
-          <div class="list-group list-group-flush">
-            <div class="list-group-item bg-transparent">Example rep: Jane Smith</div>
-            <div class="list-group-item bg-transparent">Example rep: John Doe</div>
-          </div>
-        </div>
+    <form method="post" action="/ui/owners">
+      <div class="d-flex gap-2 mb-3">
+        <button class="btn btn-primary btn-sm" type="submit" name="action" value="suggest">Suggest matches</button>
+        <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="save">Save map</button>
       </div>
-      <div class="col-md-6">
-        <div class="panel-card-soft p-3 h-100">
-          <h5 class="mb-3">HubSpot owners</h5>
-          <p class="text-muted small mb-3">Use the JSON owner endpoints to refresh and map owners.</p>
-          <div class="list-group list-group-flush">
-            <div class="list-group-item bg-transparent">Owner: Amy North</div>
-            <div class="list-group-item bg-transparent">Owner: Sam Lee</div>
-          </div>
-        </div>
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead>
+            <tr>
+              <th>Aquira sales rep</th>
+              <th>HubSpot owner</th>
+              <th>Enabled</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in rows %}
+              <tr>
+                <td>
+                  <input type="hidden" name="aquira_user_id" value="{{ row.aquira_user_id }}">
+                  <strong>{{ row.aquira_name or row.aquira_user_id }}</strong>
+                  <div class="small text-muted">{{ row.aquira_email }}</div>
+                  {% if row.suggested %}<span class="badge text-bg-light">suggested</span>{% endif %}
+                </td>
+                <td>
+                  <select class="form-select" name="hubspot_owner_id_{{ row.aquira_user_id }}">
+                    <option value="">Unmapped</option>
+                    {% for owner in hubspot_owners %}
+                      <option value="{{ owner.owner_id }}" {% if owner.owner_id == row.hubspot_owner_id %}selected{% endif %}>
+                        {{ owner.name }} — {{ owner.email }}
+                      </option>
+                    {% endfor %}
+                  </select>
+                </td>
+                <td>
+                  <input class="form-check-input" type="checkbox" name="enabled_{{ row.aquira_user_id }}" {% if row.enabled %}checked{% endif %}>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="3" class="text-muted">No reps loaded. Save Aquira credentials, then click Suggest matches.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
-    </div>
+    </form>
   </div>
 {% endblock %}
