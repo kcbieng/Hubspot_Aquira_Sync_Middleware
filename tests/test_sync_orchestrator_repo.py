@@ -52,6 +52,24 @@ def test_orchestrator_emits_live_payload_data_for_each_entity():
     assert contact_call.kwargs["diff_json"]["items"][0]["ownerId"] == 77
 
 
+def test_orchestrator_uses_demo_payloads_when_live_sources_are_empty():
+    orchestrator = SyncOrchestrator()
+    repo = MagicMock()
+    repo.add_run.return_value = MagicMock(id=13)
+
+    with patch("app.sync.orchestrator.AquiraSessionClient") as aquira_cls, patch("app.sync.orchestrator.HubSpotClient") as hubspot_cls:
+        aquira_cls.return_value.load_sales_reps.return_value = []
+        hubspot_cls.return_value.get_owners.return_value = {"results": []}
+
+        orchestrator.run(SyncContext(trigger="manual", whatif=True, entities=["companies", "contacts", "deals"]), repo=repo)
+
+    run_items = [call.kwargs["diff_json"] for call in repo.add_run_item.call_args_list]
+    assert run_items[0]["items"]
+    assert run_items[1]["items"]
+    assert run_items[2]["items"]
+    assert run_items[0]["items"][0]["demo"] is True
+
+
 def test_manual_sync_api_uses_orchestrator_result_payload():
     from app.api.routes import run_sync
 

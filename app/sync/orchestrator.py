@@ -66,24 +66,55 @@ class SyncOrchestrator:
         rows = repo.session.query(OwnerMap).filter(OwnerMap.enabled.is_(True)).all()
         return {str(row.aquira_user_id): str(row.hubspot_owner_id) for row in rows if row.hubspot_owner_id}
 
+    def _demo_rows(self, entity: str) -> list[dict[str, Any]]:
+        if entity == "companies":
+            return [{
+                "id": 101,
+                "Name": "Demo Account",
+                "IsAccount": True,
+                "IsAdvertiser": False,
+                "Domain": "demo-account.local",
+                "demo": True,
+            }]
+        if entity == "contacts":
+            return [{
+                "ownerId": "demo-owner-1",
+                "firstName": "Jamie",
+                "lastName": "Smith",
+                "email": "jamie@example.com",
+                "demo": True,
+            }]
+        if entity == "deals":
+            return [{
+                "id": "deal-demo-1",
+                "dealname": "Demo Contract — ACME",
+                "amount": 250000.0,
+                "dealstage": "proposal",
+                "ownerId": "demo-owner-1",
+                "demo": True,
+            }]
+        return [{"id": "demo", "entity": entity, "demo": True}]
+
     def _entity_payload(self, entity: str) -> tuple[str, list[dict[str, Any]]]:
         if entity == "companies":
             try:
                 client = AquiraSessionClient()
                 data = client.load_sales_reps()
                 client.close()
-                return "aquira", data[:10]
+                rows = data[:10]
+                return "aquira", rows if rows else self._demo_rows(entity)
             except Exception:
-                return "aquira", []
+                return "aquira", self._demo_rows(entity)
 
         if entity == "contacts":
             try:
                 client = HubSpotClient()
                 payload = client.get_owners()
                 items = payload.get("results", [])
-                return "hubspot", items[:10]
+                rows = items[:10]
+                return "hubspot", rows if rows else self._demo_rows(entity)
             except Exception:
-                return "hubspot", []
+                return "hubspot", self._demo_rows(entity)
 
         if entity == "deals":
             try:
@@ -93,11 +124,14 @@ class SyncOrchestrator:
                 owner_map = self._owner_map_for_sync()
                 for item in items:
                     item["owner_map_applied"] = owner_map.get(str(item.get("ownerId")), item.get("ownerId"))
-                return "hubspot", items[:10]
+                rows = items[:10]
+                if not rows:
+                    rows = self._demo_rows(entity)
+                return "hubspot", rows
             except Exception:
-                return "hubspot", []
+                return "hubspot", self._demo_rows(entity)
 
-        return "local", []
+        return "local", self._demo_rows(entity)
 
     def run(self, context: SyncContext, repo: Any | None = None) -> dict[str, Any]:
         self.acquire_lock()
