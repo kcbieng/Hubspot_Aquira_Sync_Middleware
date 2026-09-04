@@ -37,6 +37,11 @@
         <input class="form-control" id="hubspot_client_secret" name="hubspot_client_secret" type="password" placeholder="unchanged if blank" value="">
       </div>
       <div class="col-md-6">
+        <label class="form-label" for="aquira_webhook_secret">Aquira webhook token</label>
+        <input class="form-control" id="aquira_webhook_secret" name="aquira_webhook_secret" type="password" placeholder="unchanged if blank" value="">
+        <div class="form-text">Optional shared token. Point Aquira at <code>{{ settings.public_base_url or 'https://your-host' }}/webhooks/aquira?token=...</code>. The first payloads are logged on <a href="/ui/logs">Logs</a> so we can see the real format.</div>
+      </div>
+      <div class="col-md-6">
         <label class="form-label" for="aquira_team_attribute">Aquira team attribute name</label>
         <input class="form-control" id="aquira_team_attribute" name="aquira_team_attribute" value="{{ settings.aquira_team_attribute }}">
         <div class="form-text">Custom Aquira attribute whose value is the exact HubSpot team name. Default: HubSpot Team.</div>

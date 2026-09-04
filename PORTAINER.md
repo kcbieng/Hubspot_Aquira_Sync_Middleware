@@ -83,11 +83,15 @@ Enable at least:
 
 Webhook URL: `{PUBLIC_BASE_URL}/webhooks/hubspot`
 
-Subscribe to:
+Aquira notification URL: `{PUBLIC_BASE_URL}/webhooks/aquira?token=<AQUIRA_WEBHOOK_SECRET>`
+
+Subscribe HubSpot to:
 
 - `company.propertyChange` (name, phone, domain, website, address)
 - `contact.propertyChange` (firstname, lastname, email, phone)
 - `company.creation` if new HubSpot companies should become Aquira clients
+
+Aquira does not publish a webhook payload schema. Point the user-notification types (proposal submitted/accepted/rejected, contract created/modified, spotlines/charges changed) at the HubQuira URL. The raw body is written to **Logs**; if a contract or proposal id can be parsed, that deal is synced immediately.
 
 ## First-run sequence
 

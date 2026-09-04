@@ -13,6 +13,7 @@ SECRET_KEYS = {
     "aquira_password",
     "hubspot_access_token",
     "hubspot_client_secret",
+    "aquira_webhook_secret",
     "ui_password",
 }
 

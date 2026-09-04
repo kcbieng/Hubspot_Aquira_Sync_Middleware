@@ -124,6 +124,7 @@ async def update_settings(request: Request):
             "aquira_password": form.get("aquira_password"),
             "hubspot_access_token": form.get("hubspot_access_token"),
             "hubspot_client_secret": form.get("hubspot_client_secret"),
+            "aquira_webhook_secret": form.get("aquira_webhook_secret"),
             "ui_username": form.get("ui_username"),
             "ui_password": form.get("ui_password"),
             "sync_calls": str(form.get("sync_calls", "false")).lower() in {"1", "true", "on", "yes"},

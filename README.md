@@ -14,6 +14,7 @@ The scheduler honors what-if mode. Live writes only happen when you turn what-if
 - Maps Aquira sales reps to HubSpot **users** (deal `hubspot_owner_id`). HubSpot's Owner picker is anyone who can own a record and is often just Super Admins — those are labeled and excluded from auto-suggest.
 - Maps Aquira teams onto HubSpot **teams** (`hubspot_team_id` on companies, contacts, and deals). Primary source is a custom Aquira attribute (default name `HubSpot Team`) whose value is the exact HubSpot team name. Fallbacks: Aquira sales team, product code, station, sales rep (including the HubSpot owner's primary team), then advertiser name. Contacts inherit from their client, then from that client's contracts.
 - Accepts HubSpot CRM webhooks and runs a targeted identity writeback
+- Accepts Aquira user notifications at `/webhooks/aquira` (proposal submitted/accepted/rejected, contract created/modified, spotlines or charges changed). Aquira does not document the payload, so HubQuira logs the raw body and extracts any contract/proposal id it can find, then runs a targeted deal+revenue sync.
 - Records every plan item and field diff so operators can inspect a what-if before enabling writes
 
 This is a live integration. There is no mock Aquira or mock HubSpot path in production. If credentials are missing, tests and the UI say so. If credentials are present, every sync reads the real APIs.
@@ -50,6 +51,8 @@ Postgres is not published to the host. Only the middleware port is.
 
 HubSpot webhook URL: `https://<your-host>/webhooks/hubspot`. Subscribe to `company.propertyChange`, `contact.propertyChange`, and `company.creation`.
 
+Aquira notification URL: `https://<your-host>/webhooks/aquira?token=<AQUIRA_WEBHOOK_SECRET>`. Point every Aquira notification type at that URL (GET/POST/PUT). The first deliveries show up on **Logs** as `Aquira notification accepted` with the raw body. If a contract or proposal id is present, HubQuira syncs that deal immediately.
+
 ## Local development
 
 ```bash
@@ -84,6 +87,8 @@ POST /sync/client/{aquira_id}
 POST /sync/contract/{aquira_id}
 GET  /sync/status
 POST /webhooks/hubspot
+POST /webhooks/aquira
+GET  /webhooks/aquira
 ```
 
 The same routes also live under `/api/sync/*` for the operator UI.

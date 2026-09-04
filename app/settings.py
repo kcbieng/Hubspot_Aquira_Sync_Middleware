@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     aquira_password: str = ""
     hubspot_access_token: str = ""
     hubspot_client_secret: str = ""
+    aquira_webhook_secret: str = ""
     database_url: str = "sqlite:///./app.db"
     sync_interval_minutes: int = 30
     whatif: bool = True
