@@ -38,6 +38,22 @@ class AquiraApiError(RuntimeError):
         self.errors = errors
 
 
+def _clean_secret(value: str) -> str:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+        text = text[1:-1]
+    return text
+
+
+def _login_error_message(data: dict[str, Any], status_code: int) -> str:
+    parts = [str(part) for part in (data.get("ErrorName"), data.get("ErrorText"), data.get("Errors")) if part]
+    if data.get("Error") not in (None, "", 0, "0"):
+        parts.append(f"code={data.get('Error')}")
+    if not parts:
+        parts.append(f"Aquira login failed (HTTP {status_code})")
+    return " | ".join(str(part) for part in parts)
+
+
 def unwrap_field_value(value: Any) -> Any:
     if isinstance(value, dict) and "Value" in value:
         return unwrap_field_value(value.get("Value"))
@@ -80,30 +96,28 @@ class AquiraSessionClient:
 
     def login(self) -> dict[str, Any]:
         user = (self.username or "").strip()
-        password = self.password or ""
+        password = _clean_secret(self.password or "")
         if not user or not password:
             raise AquiraApiError("Aquira username and password are required.")
-        two_go = {
-            "Username": user,
-            "UserName": user,
-            "Password": password,
-            "IsAquira2GOLogin": True,
-            "WindowsLogin": False,
-            "PassThrough": False,
-            "name": "login",
-        }
+        if password.startswith("gAAAA"):
+            logger.error(
+                "Aquira password looks like an encrypted settings blob, not the real password. "
+                "Clear the UI-stored Aquira password or fix SETTINGS_FERNET_KEY."
+            )
+            raise AquiraApiError(
+                "Aquira password could not be decrypted. Re-enter it in Settings or set AQUIRA_PASSWORD in the stack."
+            )
+        logger.info("Aquira login as %s (password_len=%s)", user, len(password))
         payloads = [
-            two_go,
-            two_go,
-            {
-                "Username": user,
-                "UserName": user,
-                "Password": password,
-                "name": "login",
-            },
+            {"Username": user, "Password": password},
+            {"UserName": user, "Password": password},
         ]
         last_error: AquiraApiError | None = None
         for index, payload in enumerate(payloads):
+            try:
+                self.client.cookies.clear()
+            except Exception:
+                pass
             if index:
                 try:
                     self.client.delete("/Session/Delete")
@@ -127,19 +141,19 @@ class AquiraSessionClient:
                 logger.info("Aquira session opened (version=%s)", self.version)
                 return data
             last_error = AquiraApiError(
-                data.get("ErrorText")
-                or data.get("Errors")
-                or data.get("ErrorName")
-                or f"Aquira login failed (HTTP {response.status_code})",
+                _login_error_message(data, response.status_code),
                 error=data.get("Error"),
                 error_name=data.get("ErrorName"),
                 errors=data.get("Errors"),
             )
-            logger.warning("Aquira login attempt %s failed: %s", index + 1, last_error)
-            try:
-                self.client.delete("/Session/Delete")
-            except Exception:
-                pass
+            logger.warning(
+                "Aquira login attempt %s failed: %s error=%s error_name=%s error_text=%s",
+                index + 1,
+                last_error,
+                data.get("Error"),
+                data.get("ErrorName"),
+                data.get("ErrorText") or data.get("Errors"),
+            )
         raise last_error or AquiraApiError("Aquira login failed")
 
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
@@ -499,6 +513,16 @@ def test_aquira_connection(settings=None) -> dict[str, Any]:
             "mode": "live",
             "message": "Aquira session accepted." if beat else "Logged in; heartbeat was inconclusive.",
             "version": version,
+        }
+    except AquiraApiError as exc:
+        return {
+            "status": "error",
+            "mode": "live",
+            "message": str(exc),
+            "error": exc.error,
+            "error_name": exc.error_name,
+            "errors": exc.errors,
+            "username": settings.aquira_username,
         }
     except Exception as exc:
         return {"status": "error", "mode": "live", "message": str(exc)}
