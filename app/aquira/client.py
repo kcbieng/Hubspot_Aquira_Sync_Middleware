@@ -261,34 +261,46 @@ class AquiraSessionClient:
 
     def search_contracts(self, search_term: str = "") -> list[dict[str, Any]]:
         payloads: list[dict[str, Any]] = []
-        search = self.try_request(
-            "POST",
-            "/Contract/Search",
-            json={"SearchTerm": search_term or "", "IncludeActive": True, "IncludeInactive": False},
-        )
-        if search:
-            payloads.append(search)
-        if not search or not list_from_envelope(search):
-            for method, path, body in (
-                ("POST", "/Contract/Search", {"SearchTerm": search_term or "", "IncludeActive": True, "IncludeInactive": True}),
-                ("POST", "/Contract/AdvancedSearch", {"SearchTerm": search_term, "CurrentOnly": True}),
-                ("GET", "/Contract/Get", None),
-                ("POST", "/Contract/Lookup", {"SearchTerm": search_term}),
-            ):
-                payload = self.try_request(method, path, json=body) if body is not None else self.try_request(method, path)
-                if payload and list_from_envelope(payload):
-                    payloads.append(payload)
-                    break
+        attempts: list[tuple[str, str, dict[str, Any] | None]] = [
+            (
+                "POST",
+                "/Contract/Search",
+                {"SearchTerm": search_term or "", "IncludeActive": True, "IncludeInactive": True},
+            ),
+            (
+                "POST",
+                "/Contract/Lookup",
+                {"SearchTerm": search_term or "", "IncludeStatuses": [0, 1, 2, 3, 4, 5]},
+            ),
+            ("GET", "/Contract/Get", None),
+        ]
         if search_term and str(search_term).isdigit():
-            by_id = self.try_request("POST", "/Contract/SearchByID", json={"ID": int(search_term)})
-            if by_id:
-                payloads.append(by_id)
+            attempts.append(("POST", "/Contract/SearchByID", {"SearchIDs": [int(search_term)]}))
+        for method, path, body in attempts:
+            payload = self.try_request(method, path, json=body) if body is not None else self.try_request(method, path)
+            rows = list_from_envelope(payload) if payload else []
+            if rows:
+                payloads.append(payload)
+                logger.info("Aquira %s returned %s contract/proposal rows", path, len(rows))
         by_id_map: dict[int, dict[str, Any]] = {}
         for payload in payloads:
             for row in list_from_envelope(payload):
                 contract = normalize_contract(row)
-                if contract:
-                    by_id_map[int(contract["ID"])] = contract
+                if not contract:
+                    continue
+                ident = int(contract["ID"])
+                existing = by_id_map.get(ident)
+                if existing is None:
+                    by_id_map[ident] = contract
+                    continue
+                for key, value in contract.items():
+                    if key in {"IsContract", "IsProposal", "Cancelled"}:
+                        existing[key] = bool(existing.get(key)) or bool(value)
+                    elif value not in (None, "", [], 0, 0.0) and existing.get(key) in (None, "", [], 0, 0.0):
+                        existing[key] = value
+        booked = sum(1 for row in by_id_map.values() if row.get("IsContract"))
+        proposals = sum(1 for row in by_id_map.values() if row.get("IsProposal") and not row.get("IsContract"))
+        logger.info("Aquira search combined %s unique deals (%s booked, %s proposal)", len(by_id_map), booked, proposals)
         return list(by_id_map.values())
 
     def load_spot_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -394,10 +406,12 @@ class AquiraSessionClient:
             contacts.extend(client.get("Contacts") or [])
         reps = self.load_sales_reps()
         logger.info(
-            "Aquira catalog ready: %s clients, %s contacts, %s contracts, %s reps",
+            "Aquira catalog ready: %s clients, %s contacts, %s deals (%s booked / %s proposal), %s reps",
             len(loaded_clients),
             len(contacts),
             len(loaded_contracts),
+            sum(1 for row in loaded_contracts if row.get("IsContract")),
+            sum(1 for row in loaded_contracts if row.get("IsProposal") and not row.get("IsContract")),
             len(reps),
         )
         return {"clients": loaded_clients, "contacts": contacts, "contracts": loaded_contracts, "reps": reps}

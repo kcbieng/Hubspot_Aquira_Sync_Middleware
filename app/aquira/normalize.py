@@ -155,10 +155,20 @@ def _status_int(value: Any) -> int | None:
         return None
     if isinstance(inner, bool):
         return None
+    if isinstance(inner, dict):
+        for key in ("ID", "Id", "Value", "Status"):
+            nested = inner.get(key)
+            if nested in (None, "", inner):
+                continue
+            found = _status_int(nested)
+            if found is not None:
+                return found
+        return None
     try:
         return int(float(inner))
     except (TypeError, ValueError):
-        return None
+        label = str(inner).strip().lower()
+        return {"draft": 0, "proposal": 1, "booked": 2, "contract": 2, "cancelled": 3, "canceled": 3}.get(label)
 
 
 def _first_station_name(value: Any) -> str:
@@ -434,7 +444,7 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
     elif raw_name and raw_name not in {str(int(ident)), contract_cd}:
         display_name = raw_name
     else:
-        display_name = f"Contract {int(ident)}"
+        display_name = f"{'Proposal' if is_proposal and not is_contract else 'Contract'} {int(ident)}"
     total = float(
         as_num(
             entity.get("TotalValue")
