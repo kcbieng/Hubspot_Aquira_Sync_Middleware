@@ -78,6 +78,8 @@ def company_properties(client: dict[str, Any]) -> dict[str, Any]:
     }
     if client.get("hubspot_team_id"):
         props["hubspot_team_id"] = str(client.get("hubspot_team_id"))
+    if client.get("HubSpotTeam"):
+        props["aquira_hubspot_team"] = str(client.get("HubSpotTeam"))
     return props
 
 
@@ -93,6 +95,8 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
     }
     if contact.get("hubspot_team_id"):
         props["hubspot_team_id"] = str(contact.get("hubspot_team_id"))
+    if contact.get("HubSpotTeam"):
+        props["aquira_hubspot_team"] = str(contact.get("HubSpotTeam"))
     return props
 
 
@@ -134,6 +138,8 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
     props = {key: value for key, value in props.items() if value is not None}
     if contract.get("hubspot_team_id"):
         props["hubspot_team_id"] = str(contract.get("hubspot_team_id"))
+    if contract.get("HubSpotTeam"):
+        props["aquira_hubspot_team"] = str(contract.get("HubSpotTeam"))
     return props
 
 

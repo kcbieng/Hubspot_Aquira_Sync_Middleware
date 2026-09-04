@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     ui_username: str = "admin"
     ui_password: str = "admin"
     bootstrap_hubspot: bool = True
-    aquira_team_attribute: str = "HubSpot Team"
+    aquira_team_attribute: str = "Hubspot_Team"
     hubquira_role: str = "web"
 
     @property

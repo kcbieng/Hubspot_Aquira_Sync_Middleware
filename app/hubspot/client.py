@@ -50,11 +50,13 @@ COMPANY_PROPS = [
         ],
     },
     {"name": "aquira_version", "label": "Aquira version", "type": "number", "fieldType": "number"},
+    {"name": "aquira_hubspot_team", "label": "Aquira HubSpot team", "type": "string", "fieldType": "text"},
 ]
 CONTACT_PROPS = [
     {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
     {"name": "aquira_entity_type", "label": "Aquira entity type", "type": "string", "fieldType": "text"},
     {"name": "aquira_client_id", "label": "Aquira client ID", "type": "string", "fieldType": "text"},
+    {"name": "aquira_hubspot_team", "label": "Aquira HubSpot team", "type": "string", "fieldType": "text"},
 ]
 DEAL_PROPS = [
     {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
@@ -74,6 +76,7 @@ DEAL_PROPS = [
     {"name": "aquira_spot_total", "label": "Aquira spot total", "type": "number", "fieldType": "number"},
     {"name": "aquira_charge_total", "label": "Aquira charge total", "type": "number", "fieldType": "number"},
     {"name": "aquira_booked_amount", "label": "Aquira booked amount (if all spots play)", "type": "number", "fieldType": "number"},
+    {"name": "aquira_hubspot_team", "label": "Aquira HubSpot team", "type": "string", "fieldType": "text"},
     {"name": "aquira_amount_delta", "label": "Aquira amount delta", "type": "number", "fieldType": "number"},
     {
         "name": "aquira_amount_mismatch",
@@ -123,6 +126,7 @@ OBJECT_GROUPS = {
     "deals": "dealinformation",
     "deal": "dealinformation",
 }
+NATIVE_PROPERTIES = {"hubspot_team_id", "hubspot_owner_id", "hs_object_id"}
 
 
 def _stringify(properties: dict[str, Any]) -> dict[str, str]:
@@ -432,6 +436,9 @@ class HubSpotClient:
         catalog = {item["name"]: item for item in [*COMPANY_PROPS, *CONTACT_PROPS, *DEAL_PROPS, *REVENUE_PROPS]}
         missing = [name for name in properties if name not in known]
         for name in missing:
+            if name in NATIVE_PROPERTIES:
+                known.add(name)
+                continue
             definition = catalog.get(name) or {
                 "name": name,
                 "label": name.replace("_", " ").title(),

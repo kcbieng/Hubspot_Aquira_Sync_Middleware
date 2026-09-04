@@ -18,16 +18,51 @@ def normalize_team_key(value: Any) -> str:
 
 
 def team_attribute_names(configured: str | None = None) -> list[str]:
-    names = [configured or "", "HubSpot Team", "Hubspot Team"]
+    names = [configured or "", "HubSpot Team", "Hubspot Team", "Hubspot_Team", "HubSpot_Team"]
     seen: set[str] = set()
     ordered: list[str] = []
     for name in names:
         text = str(name or "").strip()
-        key = text.lower()
+        key = normalize_team_key(text)
         if text and key not in seen:
             seen.add(key)
             ordered.append(text)
     return ordered or ["HubSpot Team"]
+
+
+def _attribute_text(value: Any) -> str:
+    inner = value
+    if isinstance(inner, dict):
+        inner = inner.get("Name") or inner.get("LongName") or inner.get("Text") or inner.get("Label") or inner.get("Value")
+    return str(inner or "").strip()
+
+
+def team_label_from(entity: dict[str, Any] | None, attribute_names: list[str] | None = None) -> str:
+    if not entity:
+        return ""
+    wanted = {normalize_team_key(name) for name in (attribute_names or team_attribute_names())}
+    attrs = entity.get("Attributes") or {}
+    if isinstance(attrs, dict):
+        for key, value in attrs.items():
+            if normalize_team_key(key) in wanted:
+                text = _attribute_text(value)
+                if text:
+                    return text
+    elif isinstance(attrs, list):
+        from app.aquira.normalize import extract_attributes
+
+        extracted = extract_attributes(entity)
+        for key, value in extracted.items():
+            if normalize_team_key(key) in wanted:
+                text = _attribute_text(value)
+                if text:
+                    return text
+    for key, value in entity.items():
+        if normalize_team_key(key) in wanted:
+            text = _attribute_text(value)
+            if text:
+                return text
+    return ""
 
 
 def qualified_key(source: str, label: Any) -> str:
@@ -37,28 +72,6 @@ def qualified_key(source: str, label: Any) -> str:
     if source in QUALIFIED_SOURCES:
         return f"{source}:{text}"
     return text
-
-
-def team_label_from(entity: dict[str, Any] | None, attribute_names: list[str] | None = None) -> str:
-    if not entity:
-        return ""
-    names = [name.lower() for name in (attribute_names or team_attribute_names())]
-    attrs = entity.get("Attributes") or {}
-    if isinstance(attrs, dict):
-        for key, value in attrs.items():
-            if str(key).strip().lower() in names and str(value or "").strip() and not isinstance(value, (dict, list)):
-                return str(value).strip()
-    elif isinstance(attrs, list):
-        from app.aquira.normalize import extract_attributes
-
-        extracted = extract_attributes(entity)
-        for key, value in extracted.items():
-            if str(key).strip().lower() in names and str(value or "").strip():
-                return str(value).strip()
-    for key, value in entity.items():
-        if str(key).strip().lower() in names and not isinstance(value, (dict, list)) and str(value or "").strip():
-            return str(value).strip()
-    return ""
 
 
 def _rep_label(entity: dict[str, Any], reps_by_id: dict[str, dict[str, Any]]) -> str:

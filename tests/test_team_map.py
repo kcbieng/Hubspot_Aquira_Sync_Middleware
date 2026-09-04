@@ -65,6 +65,48 @@ def test_contacts_inherit_client_team_then_contract():
     assert company_properties(catalog["clients"][0])["hubspot_team_id"] == "t-1"
 
 
+def test_hubspot_team_lookup_attribute_matches_program_support():
+    from app.aquira.normalize import normalize_client
+    from app.mapping.teams import team_label_from
+
+    payload = {
+        "Entity": {
+            "ID": 44,
+            "ClientCD": {"Value": "10043"},
+            "Fullname": {"Value": "A New Beginning"},
+            "Attributes": {
+                "Value": [
+                    {
+                        "Name": "Hubspot_Team",
+                        "AttrType": "LookUp",
+                        "Value": {
+                            "IsCurrent": True,
+                            "DisplayOrder": 5,
+                            "Name": "Program Support",
+                            "LongName": "Program Support",
+                            "ID": 14,
+                        },
+                    }
+                ]
+            },
+        }
+    }
+    client = normalize_client(payload)
+    assert client["Attributes"]["Hubspot_Team"] == "Program Support"
+    assert team_label_from(client) == "Program Support"
+    catalog = {
+        "clients": [client],
+        "contacts": [{"ID": 9, "ClientID": 44, "FirstName": "Pat", "LastName": "Seller", "Attributes": {}}],
+        "contracts": [],
+    }
+    apply_team_ids(catalog, {}, teams_by_name={"program support": "t-ps"})
+    assert catalog["clients"][0]["hubspot_team_id"] == "t-ps"
+    assert catalog["contacts"][0]["hubspot_team_id"] == "t-ps"
+    assert company_properties(catalog["clients"][0])["hubspot_team_id"] == "t-ps"
+    assert company_properties(catalog["clients"][0])["aquira_hubspot_team"] == "Program Support"
+    assert contact_properties(catalog["contacts"][0])["hubspot_team_id"] == "t-ps"
+
+
 def test_station_fallback_maps_contract_team():
     catalog = {
         "clients": [],
