@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     ui_password: str = "admin"
     bootstrap_hubspot: bool = True
     aquira_team_attribute: str = "HubSpot Team"
-    hubquira_role: str = "all"
+    hubquira_role: str = "web"
 
     @property
     def effective_database_url(self) -> str:

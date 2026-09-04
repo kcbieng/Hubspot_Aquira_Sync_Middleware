@@ -23,3 +23,16 @@ def test_overlay_skips_undecryptable_secret(monkeypatch):
     monkeypatch.setattr(repo_mod, "Repo", lambda: FakeRepo({"aquira_password": "gAAAAABnotvalidciphertext"}))
     apply_db_overlay()
     assert get_settings().aquira_password == "env-password"
+
+
+def test_overlay_does_not_override_process_role(monkeypatch):
+    from app.settings import get_settings
+    import app.db.repo as repo_mod
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("HUBQUIRA_ROLE", "web")
+    get_settings.cache_clear()
+    monkeypatch.setattr(repo_mod, "Repo", lambda: FakeRepo({"hubquira_role": "all", "whatif": "false"}))
+    apply_db_overlay()
+    assert get_settings().hubquira_role == "web"
+    get_settings.cache_clear()

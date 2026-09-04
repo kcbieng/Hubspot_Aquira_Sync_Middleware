@@ -21,9 +21,13 @@ def _role() -> str:
     return str(getattr(get_settings(), "hubquira_role", "all") or "all").strip().lower()
 
 
+def can_execute_jobs() -> bool:
+    return _role() in {"worker", "all"}
+
+
 def start_worker() -> None:
     global _started, _thread
-    if _role() == "web":
+    if not can_execute_jobs():
         return
     with _lock:
         if _started and _thread is not None and _thread.is_alive():
@@ -52,7 +56,7 @@ def is_busy() -> bool:
 
 
 def enqueue_sync(context: SyncContext) -> dict[str, Any]:
-    if _role() != "web":
+    if can_execute_jobs():
         start_worker()
     from app.db.repo import Repo
 
@@ -151,6 +155,8 @@ def wait_for_run(run_id: int, timeout: float = 30.0) -> dict[str, Any] | None:
 
 
 def _execute_row(kind: str, payload: dict[str, Any], run_id: int | None) -> None:
+    if not can_execute_jobs():
+        raise RuntimeError(f"refusing to execute {kind} in HubQuira role={_role()}")
     if kind == "sync":
         from app.sync.orchestrator import SyncOrchestrator
 
@@ -214,6 +220,10 @@ def run_forever(*, once: bool = False, idle_sleep: float = 0.4) -> None:
 
 
 def main() -> None:
+    import os
+
+    os.environ["HUBQUIRA_ROLE"] = "worker"
+    get_settings.cache_clear()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     from app.runtime import apply_db_overlay
 
@@ -227,7 +237,7 @@ def main() -> None:
     poll_job = PollJob(scheduler)
     poll_job.schedule(settings.sync_interval_minutes)
     set_active_job(poll_job)
-    logger.info("HubQuira worker process ready (poll every %s min)", settings.sync_interval_minutes)
+    logger.info("HubQuira worker process ready (role=%s, poll every %s min)", _role(), settings.sync_interval_minutes)
     try:
         run_forever()
     finally:

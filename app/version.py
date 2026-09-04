@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-client-cd"
+REVISION = "2026.09.04-web-no-sync"

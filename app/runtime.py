@@ -26,6 +26,10 @@ BOOL_KEYS = {
 
 INT_KEYS = {"sync_interval_minutes"}
 
+# Process identity — never take these from the settings table or the UI can pin the
+# HTTP container to role=all and run catalog pulls on the middleware thread.
+PROCESS_KEYS = {"hubquira_role", "database_url", "settings_fernet_key"}
+
 
 def _fernet():
     try:
@@ -86,6 +90,8 @@ def persist_settings(values: dict[str, Any]) -> Settings:
     for key, raw in values.items():
         if not hasattr(settings, key) or raw is None:
             continue
+        if key in PROCESS_KEYS:
+            continue
         if key in SECRET_KEYS and isinstance(raw, str) and ("••••" in raw or raw == ""):
             continue
         coerced = coerce_setting(key, raw)
@@ -118,6 +124,8 @@ def apply_db_overlay() -> Settings:
         return settings
     for key, stored in rows.items():
         if not hasattr(settings, key) or stored is None:
+            continue
+        if key in PROCESS_KEYS:
             continue
         if key in SECRET_KEYS:
             if looks_encrypted(stored):

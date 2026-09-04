@@ -36,13 +36,14 @@ async def lifespan(_: FastAPI):
     _configure_logging()
     apply_db_overlay()
     settings = get_settings()
-    role = str(settings.hubquira_role or "all").strip().lower()
-    if role != "web":
-        from app.sync.worker import start_worker
+    from app.sync.worker import can_execute_jobs, start_worker
 
+    role = str(settings.hubquira_role or "web").strip().lower()
+    logging.getLogger("app").info("HubQuira HTTP process role=%s execute_jobs=%s", role, can_execute_jobs())
+    if can_execute_jobs():
         start_worker()
     scheduler = None
-    if role != "web":
+    if can_execute_jobs():
         scheduler = BackgroundScheduler(timezone=settings.timezone)
         scheduler.start()
         poll_job = PollJob(scheduler)
