@@ -4,7 +4,17 @@ from unittest.mock import patch
 
 import pytest
 
-from app.hubspot.client import HubSpotClient
+from app.hubspot.client import BOOL_OPTIONS, DEAL_PROPS, HubSpotClient
+
+
+def test_deal_bool_properties_include_true_false_options():
+    bools = [prop for prop in DEAL_PROPS if prop["name"] in {"aquira_is_proposal", "aquira_is_contract"}]
+    assert len(bools) == 2
+    for prop in bools:
+        assert prop["type"] == "bool"
+        assert prop["fieldType"] == "booleancheckbox"
+        assert {option["value"] for option in prop["options"]} == {"true", "false"}
+        assert prop["options"] == BOOL_OPTIONS
 
 
 def test_hubspot_ensure_properties_creates_missing_fields():

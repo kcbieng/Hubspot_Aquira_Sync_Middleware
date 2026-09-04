@@ -1,4 +1,5 @@
-REVISION = "2026.09.04-proposals"
+REVISION = "2026.09.04-deal-bool-props"
+
 
 
 

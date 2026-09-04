@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 from typing import Any
 
 import httpx
@@ -11,6 +12,13 @@ from app.aquira.contracts import normalize_spotlines
 from app.hashutil import content_hash
 from app.mapping.revenue import allocate_revenue
 from app.settings import get_settings
+
+logger = logging.getLogger(__name__)
+
+BOOL_OPTIONS = [
+    {"label": "Yes", "value": "true", "displayOrder": 0, "hidden": False},
+    {"label": "No", "value": "false", "displayOrder": 1, "hidden": False},
+]
 
 
 def _unwrap(value: Any) -> Any:
@@ -51,8 +59,8 @@ DEAL_PROPS = [
     {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
     {"name": "aquira_contract_cd", "label": "Aquira contract CD", "type": "string", "fieldType": "text"},
     {"name": "aquira_status", "label": "Aquira status", "type": "string", "fieldType": "text"},
-    {"name": "aquira_is_proposal", "label": "Aquira is proposal", "type": "bool", "fieldType": "booleancheckbox"},
-    {"name": "aquira_is_contract", "label": "Aquira is contract", "type": "bool", "fieldType": "booleancheckbox"},
+    {"name": "aquira_is_proposal", "label": "Aquira is proposal", "type": "bool", "fieldType": "booleancheckbox", "options": BOOL_OPTIONS},
+    {"name": "aquira_is_contract", "label": "Aquira is contract", "type": "bool", "fieldType": "booleancheckbox", "options": BOOL_OPTIONS},
     {"name": "aquira_sign_date", "label": "Aquira sign date", "type": "date", "fieldType": "date"},
     {"name": "aquira_start_date", "label": "Aquira start date", "type": "date", "fieldType": "date"},
     {"name": "aquira_end_date", "label": "Aquira end date", "type": "date", "fieldType": "date"},
@@ -116,7 +124,11 @@ class HubSpotClient:
         response = httpx.request(method, url, headers=self.headers(), timeout=30.0, **kwargs)
         text = response.text
         if response.status_code >= 400:
-            raise HubSpotApiError(response.status_code, text[:800], f"HubSpot {method} {path} failed (HTTP {response.status_code})")
+            raise HubSpotApiError(
+                response.status_code,
+                text[:800],
+                f"HubSpot {method} {path} failed (HTTP {response.status_code}): {text[:240]}",
+            )
         if not text:
             return {}
         try:
@@ -626,6 +638,13 @@ class HubSpotClient:
                     )
                     created.append(f"{object_type}.{definition['name']}")
                 except HubSpotApiError as exc:
+                    logger.warning(
+                        "HubSpot property create %s.%s failed (HTTP %s): %s",
+                        object_type,
+                        definition["name"],
+                        exc.status,
+                        exc.body[:400],
+                    )
                     if exc.status in {400, 409}:
                         continue
                     warnings.append(f"Could not create {object_type}.{definition['name']}: {exc}")
