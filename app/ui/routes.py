@@ -220,7 +220,8 @@ def teams_page(request: Request):
         {
             "rows": rows,
             "hubspot_teams": hubspot_teams(),
-            "attribute_name": get_settings().aquira_team_attribute or "HubSpot Team",
+            "hubspot_owners": hubspot_owners(),
+            "attribute_name": get_settings().aquira_team_attribute or "Hubspot_Team",
         },
     )
 
@@ -238,15 +239,20 @@ async def teams_save(request: Request):
         return RedirectResponse(url="/ui/teams", status_code=303)
     aquira_keys = form.getlist("aquira_key")
     teams = hubspot_teams()
+    owners = hubspot_owners()
     for aquira_key in aquira_keys:
         team_id = str(form.get(f"hubspot_team_id_{aquira_key}") or "") or None
+        owner_id = str(form.get(f"hubspot_owner_id_{aquira_key}") or "") or None
         enabled = str(form.get(f"enabled_{aquira_key}") or "") in {"1", "on", "true"}
         row = repo.session.get(TeamMap, str(aquira_key))
         if row is None:
             continue
         hubspot = next((item for item in teams if str(item.get("id")) == str(team_id or "")), None)
+        owner = next((item for item in owners if str(item.get("owner_id")) == str(owner_id or "")), None)
         row.hubspot_team_id = team_id
         row.hubspot_team_name = (hubspot or {}).get("name")
+        row.hubspot_owner_id = owner_id
+        row.hubspot_owner_name = (owner or {}).get("name")
         row.enabled = enabled and bool(team_id)
         row.suggested = False
         repo.session.add(row)

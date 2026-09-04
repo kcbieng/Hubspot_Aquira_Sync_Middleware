@@ -360,6 +360,8 @@ def team_map() -> list[dict[str, object]]:
                 existing.source = suggestion.get("source") or existing.source
                 repo.session.add(existing)
                 continue
+            owner_id = existing.hubspot_owner_id if existing is not None else None
+            owner_name = existing.hubspot_owner_name if existing is not None else None
             repo.session.merge(
                 TeamMap(
                     aquira_key=aquira_key,
@@ -367,6 +369,8 @@ def team_map() -> list[dict[str, object]]:
                     source=suggestion.get("source"),
                     hubspot_team_id=suggestion.get("hubspot_team_id"),
                     hubspot_team_name=suggestion.get("hubspot_team_name"),
+                    hubspot_owner_id=owner_id,
+                    hubspot_owner_name=owner_name,
                     enabled=bool(suggestion.get("enabled")),
                     suggested=bool(suggestion.get("suggested")),
                     updated_at=datetime.utcnow(),
@@ -392,6 +396,8 @@ def update_team_map(payload: list[dict[str, object]]) -> list[dict[str, object]]
                 source=suggestion.get("source"),
                 hubspot_team_id=suggestion.get("hubspot_team_id"),
                 hubspot_team_name=suggestion.get("hubspot_team_name"),
+                hubspot_owner_id=suggestion.get("hubspot_owner_id") or None,
+                hubspot_owner_name=suggestion.get("hubspot_owner_name") or None,
                 enabled=bool(suggestion.get("enabled")),
                 suggested=bool(suggestion.get("suggested")),
                 updated_at=datetime.utcnow(),

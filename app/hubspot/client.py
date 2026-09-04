@@ -262,12 +262,18 @@ class HubSpotClient:
                 or owner.get("email")
                 or ident
             )
+            teams = owner.get("teams") or []
+            primary = next((team for team in teams if team.get("primary") is True), None)
+            if primary is None and len(teams) == 1:
+                primary = teams[0]
             owners.append(
                 {
                     "owner_id": ident,
                     "user_id": str(owner.get("userId") or "") or "",
                     "name": name,
                     "email": owner.get("email") or "",
+                    "team_id": str((primary or {}).get("id") or ""),
+                    "team_name": str((primary or {}).get("name") or ""),
                 }
             )
         return owners
@@ -353,6 +359,8 @@ class HubSpotClient:
                     "role": role_name,
                     "kind": kind,
                     "super_admin": super_admin,
+                    "team_id": owner.get("team_id") or "",
+                    "team_name": owner.get("team_name") or "",
                 }
             )
         rows.sort(

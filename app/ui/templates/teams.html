@@ -11,10 +11,14 @@
       Create an Aquira custom attribute named <strong>{{ attribute_name }}</strong> whose value is the
       <em>exact</em> HubSpot team name. Set it on the client, advertiser, account, contract, or proposal.
       If that attribute is empty, the mapper infers a team from Aquira sales team, product code,
-      station, sales rep, or advertiser name — in that order. Sales reps also inherit the HubSpot team
-      of their mapped owner when that owner belongs to a single/primary team.
+      station, sales rep, or advertiser name — in that order.
       Contacts inherit from their client, then from that client&rsquo;s contracts.
-      Product codes and sales-rep names never auto-match a HubSpot team; map those rows below.
+    </p>
+    <p class="text-muted">
+      <strong>Default owner</strong> is the HubSpot user who owns records for that team when the Aquira
+      sales rep is not in HubSpot. Put that user on the team (main team), then pick them here.
+      Mapped sales reps still win when they exist. HubSpot then fills HubSpot Team from that owner
+      so team-only permissions work.
     </p>
 
     <form method="post" action="/ui/teams">
@@ -28,6 +32,7 @@
             <tr>
               <th>Aquira value</th>
               <th>HubSpot team</th>
+              <th>Default owner</th>
               <th>Enabled</th>
             </tr>
           </thead>
@@ -51,12 +56,22 @@
                   </select>
                 </td>
                 <td>
+                  <select class="form-select" name="hubspot_owner_id_{{ row.aquira_key }}">
+                    <option value="">No queue owner — leave unassigned if the Aquira rep is unmapped</option>
+                    {% for owner in hubspot_owners %}
+                      <option value="{{ owner.owner_id }}" {% if owner.owner_id == row.hubspot_owner_id %}selected{% endif %}>
+                        {{ owner.name }}{% if owner.email %} ({{ owner.email }}){% endif %}{% if owner.team_name %} — {{ owner.team_name }}{% endif %}
+                      </option>
+                    {% endfor %}
+                  </select>
+                </td>
+                <td>
                   <input class="form-check-input" type="checkbox" name="enabled_{{ row.aquira_key }}" {% if row.enabled %}checked{% endif %}>
                 </td>
               </tr>
             {% else %}
               <tr>
-                <td colspan="3" class="text-muted">No team values yet. Save Aquira credentials, then click Suggest matches.</td>
+                <td colspan="4" class="text-muted">No team values yet. Save Aquira credentials, then click Suggest matches.</td>
               </tr>
             {% endfor %}
           </tbody>

@@ -232,6 +232,7 @@ def apply_team_ids(
     attribute_names: list[str] | None = None,
     owner_by_aquira: dict[str, str] | None = None,
     owner_team_by_owner_id: dict[str, str] | None = None,
+    team_owner_by_team_id: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     names = attribute_names or team_attribute_names()
     clients = catalog.get("clients") or []
@@ -241,6 +242,7 @@ def apply_team_ids(
     clients_by_id = {str(client.get("ID")): client for client in clients}
     owner_by_aquira = owner_by_aquira or {}
     owner_team_by_owner_id = owner_team_by_owner_id or {}
+    team_owner_by_team_id = team_owner_by_team_id or {}
 
     def set_team(entity: dict[str, Any], team_id: str | None, label: str | None) -> str | None:
         entity["HubSpotTeam"] = str(label or "").strip()
@@ -344,4 +346,28 @@ def apply_team_ids(
             set_team(contact, chosen.get("hubspot_team_id"), chosen.get("HubSpotTeam") or "")
             continue
         assign_from_attribute(contact, label)
+
+    def assign_owner(entity: dict[str, Any], parent: dict[str, Any] | None = None) -> None:
+        ident = entity.get("SalesRepID")
+        mapped = owner_by_aquira.get(str(ident or ""))
+        if mapped:
+            entity["hubspot_owner_id"] = mapped
+            return
+        if parent and parent.get("hubspot_owner_id"):
+            entity["hubspot_owner_id"] = parent.get("hubspot_owner_id")
+            return
+        team_id = entity.get("hubspot_team_id")
+        if team_id and team_owner_by_team_id.get(str(team_id)):
+            entity["hubspot_owner_id"] = team_owner_by_team_id[str(team_id)]
+
+    for client in sorted(clients, key=parent_first):
+        parent = clients_by_id.get(str(client.get("AccountID") or ""))
+        assign_owner(client, parent if parent is not client else None)
+    for contract in contracts:
+        parent = clients_by_id.get(str(contract.get("AdvertiserID") or "")) or clients_by_id.get(
+            str(contract.get("AccountID") or "")
+        )
+        assign_owner(contract, parent)
+    for contact in contacts:
+        assign_owner(contact, clients_by_id.get(str(contact.get("ClientID") or "")))
     return catalog

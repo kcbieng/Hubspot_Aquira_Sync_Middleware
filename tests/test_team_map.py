@@ -107,6 +107,54 @@ def test_hubspot_team_lookup_attribute_matches_program_support():
     assert contact_properties(catalog["contacts"][0])["hubspot_team_id"] == "t-ps"
 
 
+def test_team_default_owner_fills_when_sales_rep_is_unmapped():
+    catalog = {
+        "clients": [
+            {
+                "ID": 44,
+                "Name": "A New Beginning",
+                "Attributes": {"Hubspot_Team": "Program Support"},
+            }
+        ],
+        "contacts": [{"ID": 9, "ClientID": 44, "FirstName": "Pat", "LastName": "Seller", "Attributes": {}}],
+        "contracts": [{"ID": 1, "AccountID": 44, "AdvertiserID": 44, "Attributes": {}}],
+    }
+    apply_team_ids(
+        catalog,
+        {},
+        teams_by_name={"program support": "t-ps"},
+        team_owner_by_team_id={"t-ps": "hs-queue"},
+    )
+    assert catalog["clients"][0]["hubspot_owner_id"] == "hs-queue"
+    assert catalog["contacts"][0]["hubspot_owner_id"] == "hs-queue"
+    assert catalog["contracts"][0]["hubspot_owner_id"] == "hs-queue"
+    assert company_properties(catalog["clients"][0])["hubspot_owner_id"] == "hs-queue"
+    assert contact_properties(catalog["contacts"][0])["hubspot_owner_id"] == "hs-queue"
+
+
+def test_mapped_sales_rep_beats_team_queue_owner():
+    catalog = {
+        "clients": [
+            {
+                "ID": 1,
+                "Name": "Adv",
+                "SalesRepID": 7,
+                "Attributes": {"HubSpot Team": "Program Support"},
+            }
+        ],
+        "contacts": [],
+        "contracts": [],
+    }
+    apply_team_ids(
+        catalog,
+        {},
+        teams_by_name={"program support": "t-ps"},
+        owner_by_aquira={"7": "hs-jane"},
+        team_owner_by_team_id={"t-ps": "hs-queue"},
+    )
+    assert catalog["clients"][0]["hubspot_owner_id"] == "hs-jane"
+
+
 def test_station_fallback_maps_contract_team():
     catalog = {
         "clients": [],

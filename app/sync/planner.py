@@ -80,6 +80,8 @@ def company_properties(client: dict[str, Any]) -> dict[str, Any]:
         props["hubspot_team_id"] = str(client.get("hubspot_team_id"))
     if client.get("HubSpotTeam"):
         props["aquira_hubspot_team"] = str(client.get("HubSpotTeam"))
+    if client.get("hubspot_owner_id"):
+        props["hubspot_owner_id"] = str(client.get("hubspot_owner_id"))
     return props
 
 
@@ -97,6 +99,8 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
         props["hubspot_team_id"] = str(contact.get("hubspot_team_id"))
     if contact.get("HubSpotTeam"):
         props["aquira_hubspot_team"] = str(contact.get("HubSpotTeam"))
+    if contact.get("hubspot_owner_id"):
+        props["hubspot_owner_id"] = str(contact.get("hubspot_owner_id"))
     return props
 
 
@@ -140,6 +144,8 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
         props["hubspot_team_id"] = str(contract.get("hubspot_team_id"))
     if contract.get("HubSpotTeam"):
         props["aquira_hubspot_team"] = str(contract.get("HubSpotTeam"))
+    if contract.get("hubspot_owner_id"):
+        props["hubspot_owner_id"] = str(contract.get("hubspot_owner_id"))
     return props
 
 
@@ -282,8 +288,9 @@ def plan_deals(
         owner_id = None
         if contract.get("SalesRepID"):
             owner_id = owner_by_aquira_user.get(str(contract.get("SalesRepID")))
+        owner_id = owner_id or contract.get("hubspot_owner_id")
         if owner_id:
-            props["hubspot_owner_id"] = owner_id
+            props["hubspot_owner_id"] = str(owner_id)
         company_ids = list({str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")} - {""})
         item = plan_upsert(
             "deal",

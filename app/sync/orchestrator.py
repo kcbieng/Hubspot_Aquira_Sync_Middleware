@@ -264,6 +264,29 @@ class SyncOrchestrator:
                 mapping[normalize_team_key(key)] = str(team_id)
         return mapping
 
+    def _team_owner_map(self, repo: Any) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        lister = getattr(repo, "list_team_maps", None)
+        if not callable(lister):
+            return mapping
+        try:
+            rows = lister()
+        except Exception:
+            return mapping
+        for row in rows or []:
+            enabled = getattr(row, "enabled", None)
+            if enabled is None and isinstance(row, dict):
+                enabled = row.get("enabled")
+            team_id = getattr(row, "hubspot_team_id", None)
+            if team_id is None and isinstance(row, dict):
+                team_id = row.get("hubspot_team_id")
+            owner_id = getattr(row, "hubspot_owner_id", None)
+            if owner_id is None and isinstance(row, dict):
+                owner_id = row.get("hubspot_owner_id")
+            if enabled and team_id and owner_id:
+                mapping[str(team_id)] = str(owner_id)
+        return mapping
+
     def _pull_live(
         self,
         repo: Any,
@@ -495,6 +518,7 @@ class SyncOrchestrator:
                 attribute_names=team_attribute_names(settings.aquira_team_attribute),
                 owner_by_aquira=self._owner_map(repo),
                 owner_team_by_owner_id=owner_team_by_owner_id,
+                team_owner_by_team_id=self._team_owner_map(repo),
             )
 
             items = self.build_plan(
