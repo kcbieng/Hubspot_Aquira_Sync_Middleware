@@ -25,6 +25,7 @@ def _public_settings() -> dict[str, object]:
         "whatif": settings.whatif,
         "sync_interval_minutes": settings.sync_interval_minutes,
         "sync_calls": settings.sync_calls,
+        "sync_writeback": settings.sync_writeback,
         "sync_create_aquira_client": settings.sync_create_aquira_client,
         "ui_username": settings.ui_username,
         "aquira_base_url": settings.aquira_base_url,
@@ -131,7 +132,7 @@ def run_sync(payload: dict[str, object] | None = None) -> dict[str, object]:
 def run_sync_client(aquira_id: str, payload: dict[str, object] | None = None) -> dict[str, object]:
     body = dict(payload or {})
     body["aquira_id"] = aquira_id
-    body.setdefault("entities", ["companies", "contacts", "writeback"])
+    body.setdefault("entities", ["companies", "contacts"])
     return _run_sync_now(body, trigger="single")
 
 

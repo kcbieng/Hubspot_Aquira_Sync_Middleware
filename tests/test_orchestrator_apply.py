@@ -105,6 +105,16 @@ def test_live_apply_writes_hubspot_records():
     assert "contacts" in object_types
     assert "deals" in object_types
     assert "revenue_period" in object_types
+    assert aquira.puts == []
+
+
+def test_writeback_stays_off_unless_enabled(monkeypatch):
+    from app.settings import get_settings
+
+    monkeypatch.setattr("app.sync.orchestrator.get_settings", lambda: type(get_settings())(sync_writeback=False))
+    orchestrator = SyncOrchestrator()
+    wanted = orchestrator._wanted(["companies", "contacts", "writeback"])
+    assert "writeback" not in wanted
 
 
 def test_whatif_does_not_write():

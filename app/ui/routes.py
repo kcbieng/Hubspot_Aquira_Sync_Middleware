@@ -127,6 +127,7 @@ async def update_settings(request: Request):
             "ui_username": form.get("ui_username"),
             "ui_password": form.get("ui_password"),
             "sync_calls": str(form.get("sync_calls", "false")).lower() in {"1", "true", "on", "yes"},
+            "sync_writeback": str(form.get("sync_writeback", "false")).lower() in {"1", "true", "on", "yes"},
             "sync_create_aquira_client": str(form.get("sync_create_aquira_client", "false")).lower() in {"1", "true", "on", "yes"},
             "bootstrap_hubspot": str(form.get("bootstrap_hubspot", "false")).lower() in {"1", "true", "on", "yes"},
             "aquira_team_attribute": form.get("aquira_team_attribute") or "HubSpot Team",

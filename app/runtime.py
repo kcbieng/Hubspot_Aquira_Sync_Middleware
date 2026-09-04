@@ -20,6 +20,7 @@ SECRET_KEYS = {
 BOOL_KEYS = {
     "whatif",
     "sync_calls",
+    "sync_writeback",
     "sync_create_aquira_client",
     "bootstrap_hubspot",
 }

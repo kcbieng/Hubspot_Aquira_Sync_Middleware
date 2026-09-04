@@ -29,7 +29,8 @@ class Settings(BaseSettings):
     sync_interval_minutes: int = 30
     whatif: bool = True
     sync_calls: bool = False
-    sync_create_aquira_client: bool = True
+    sync_writeback: bool = False
+    sync_create_aquira_client: bool = False
     settings_fernet_key: str = ""
     ui_username: str = "admin"
     ui_password: str = "admin"

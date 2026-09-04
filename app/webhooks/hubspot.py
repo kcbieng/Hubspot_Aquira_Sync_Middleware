@@ -126,6 +126,8 @@ def process_hubspot_identity_events(events: list[dict[str, Any]]) -> dict[str, A
         return {"processed": 0, "runs": [], "error": str(exc)}
 
     seen: set[str] = set()
+    if not settings.sync_writeback:
+        return {"processed": 0, "runs": [], "aquira_ids": sorted(set(aquira_ids)), "skipped": "writeback disabled"}
     for aquira_id in aquira_ids:
         if aquira_id in seen:
             continue

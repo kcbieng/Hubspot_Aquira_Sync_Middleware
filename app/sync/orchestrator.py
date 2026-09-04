@@ -151,8 +151,8 @@ class SyncOrchestrator:
         wanted = {self.ALIASES.get(name, name) for name in entities}
         if "deals" in wanted:
             wanted.add("revenue")
-        if "companies" in wanted or "contacts" in wanted:
-            wanted.add("writeback")
+        if "writeback" in wanted and not get_settings().sync_writeback:
+            wanted.discard("writeback")
         return wanted
 
     def build_plan(
