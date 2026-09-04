@@ -155,7 +155,17 @@ def _ref_names(value: Any) -> list[str]:
 
 
 def _sales_rep_id(entity: dict[str, Any]) -> int | None:
-    direct = _ref_id(entity.get("SalesRepID") or entity.get("SalesRep"))
+    direct = _ref_id(
+        entity.get("SalesRepID")
+        or entity.get("SalesRep")
+        or entity.get("AE")
+        or entity.get("AEID")
+        or entity.get("AccountExecutive")
+        or entity.get("DefaultSalesRep")
+        or entity.get("Seller")
+        or entity.get("SalesPerson")
+        or entity.get("User")
+    )
     if direct:
         return direct
     reps = unwrap(entity.get("SalesReps"))

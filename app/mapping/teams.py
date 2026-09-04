@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.mapping.owners import _normalize_name
+
 QUALIFIED_SOURCES = {"salesrep", "product"}
 SOURCE_RANK = {
     "attribute": 0,
@@ -233,6 +235,7 @@ def apply_team_ids(
     owner_by_aquira: dict[str, str] | None = None,
     owner_team_by_owner_id: dict[str, str] | None = None,
     team_owner_by_team_id: dict[str, str] | None = None,
+    owner_by_name: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     names = attribute_names or team_attribute_names()
     clients = catalog.get("clients") or []
@@ -243,6 +246,7 @@ def apply_team_ids(
     owner_by_aquira = owner_by_aquira or {}
     owner_team_by_owner_id = owner_team_by_owner_id or {}
     team_owner_by_team_id = team_owner_by_team_id or {}
+    owner_by_name = owner_by_name or {}
 
     def set_team(entity: dict[str, Any], team_id: str | None, label: str | None) -> str | None:
         entity["HubSpotTeam"] = str(label or "").strip()
@@ -348,8 +352,12 @@ def apply_team_ids(
         assign_from_attribute(contact, label)
 
     def assign_owner(entity: dict[str, Any], parent: dict[str, Any] | None = None) -> None:
+        if entity.get("hubspot_owner_id"):
+            return
         ident = entity.get("SalesRepID")
         mapped = owner_by_aquira.get(str(ident or ""))
+        if not mapped:
+            mapped = owner_by_name.get(_normalize_name(entity.get("SalesRepName")))
         if mapped:
             entity["hubspot_owner_id"] = mapped
             return
@@ -368,6 +376,20 @@ def apply_team_ids(
             str(contract.get("AccountID") or "")
         )
         assign_owner(contract, parent)
+    for client in clients:
+        if client.get("hubspot_owner_id"):
+            continue
+        client_id = str(client.get("ID") or "")
+        related = [
+            contract
+            for contract in contracts
+            if client_id
+            and client_id in {str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")}
+            and contract.get("hubspot_owner_id")
+        ]
+        owners = {str(contract.get("hubspot_owner_id")) for contract in related}
+        if len(owners) == 1:
+            client["hubspot_owner_id"] = next(iter(owners))
     for contact in contacts:
         assign_owner(contact, clients_by_id.get(str(contact.get("ClientID") or "")))
     return catalog

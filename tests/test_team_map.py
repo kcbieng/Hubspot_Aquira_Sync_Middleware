@@ -155,6 +155,39 @@ def test_mapped_sales_rep_beats_team_queue_owner():
     assert catalog["clients"][0]["hubspot_owner_id"] == "hs-jane"
 
 
+def test_company_inherits_owner_from_contract_sales_rep():
+    catalog = {
+        "clients": [{"ID": 44, "Name": "A New Beginning", "Attributes": {}}],
+        "contacts": [{"ID": 9, "ClientID": 44, "FirstName": "Pat", "LastName": "Seller", "Attributes": {}}],
+        "contracts": [
+            {
+                "ID": 1,
+                "AccountID": 44,
+                "AdvertiserID": 44,
+                "SalesRepID": 7,
+                "SalesRepName": "Clint Lewis",
+                "Attributes": {},
+            }
+        ],
+    }
+    apply_team_ids(catalog, {}, owner_by_aquira={"7": "hs-clint"})
+    assert catalog["contracts"][0]["hubspot_owner_id"] == "hs-clint"
+    assert catalog["clients"][0]["hubspot_owner_id"] == "hs-clint"
+    assert catalog["contacts"][0]["hubspot_owner_id"] == "hs-clint"
+    assert company_properties(catalog["clients"][0])["hubspot_owner_id"] == "hs-clint"
+
+
+def test_company_owner_matches_sales_rep_name():
+    catalog = {
+        "clients": [{"ID": 44, "Name": "A New Beginning", "SalesRepName": "Clint Lewis", "Attributes": {}}],
+        "contacts": [],
+        "contracts": [],
+    }
+    apply_team_ids(catalog, {}, owner_by_name={"clint lewis": "hs-clint"})
+    assert catalog["clients"][0]["hubspot_owner_id"] == "hs-clint"
+
+
+
 def test_station_fallback_maps_contract_team():
     catalog = {
         "clients": [],

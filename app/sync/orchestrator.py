@@ -239,6 +239,32 @@ class SyncOrchestrator:
                 mapping[str(aquira_id)] = str(owner_id)
         return mapping
 
+    def _owner_by_name(self, repo: Any) -> dict[str, str]:
+        from app.mapping.owners import _normalize_name
+
+        mapping: dict[str, str] = {}
+        lister = getattr(repo, "list_owner_maps", None)
+        if not callable(lister):
+            return mapping
+        try:
+            rows = lister()
+        except Exception:
+            return mapping
+        for row in rows or []:
+            enabled = getattr(row, "enabled", None)
+            if enabled is None and isinstance(row, dict):
+                enabled = row.get("enabled")
+            owner_id = getattr(row, "hubspot_owner_id", None)
+            if owner_id is None and isinstance(row, dict):
+                owner_id = row.get("hubspot_owner_id")
+            name = getattr(row, "aquira_name", None)
+            if name is None and isinstance(row, dict):
+                name = row.get("aquira_name")
+            key = _normalize_name(name)
+            if enabled and owner_id and key:
+                mapping[key] = str(owner_id)
+        return mapping
+
     def _team_map(self, repo: Any) -> dict[str, str]:
         from app.mapping.teams import normalize_team_key
 
@@ -519,6 +545,7 @@ class SyncOrchestrator:
                 owner_by_aquira=self._owner_map(repo),
                 owner_team_by_owner_id=owner_team_by_owner_id,
                 team_owner_by_team_id=self._team_owner_map(repo),
+                owner_by_name=self._owner_by_name(repo),
             )
 
             items = self.build_plan(

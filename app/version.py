@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-team-queue-owner"
+REVISION = "2026.09.04-company-owner-from-rep"
