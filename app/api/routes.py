@@ -230,6 +230,8 @@ def whatif_toggle(payload: dict[str, bool]) -> dict[str, bool]:
 def aquira_owners() -> list[dict[str, object]]:
     client = AquiraSessionClient()
     try:
+        if not getattr(client, "logged_in", True):
+            client.login()
         reps = client.load_sales_reps()
     except Exception:
         reps = []
@@ -246,6 +248,7 @@ def aquira_owners() -> list[dict[str, object]]:
         }
         for rep in reps
     ]
+
 
 
 @router.get("/owners/hubspot")

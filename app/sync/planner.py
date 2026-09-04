@@ -334,6 +334,7 @@ def plan_contact_writebacks(hubspot_contacts: list[dict[str, Any]], aquira_by_id
                 "diffs": diffs,
                 "properties": proposed,
                 "writeback": True,
+                "associations": {"clientId": contact.get("ClientID")},
             }
         )
     return items

@@ -1,28 +1,24 @@
 # Project map
 
 ## Target modules
-- app/main.py — FastAPI bootstrap and health endpoints
-- app/settings.py — environment-driven settings and runtime flags
-- app/hubspot/client.py — HubSpot API access, owner lookup, and schema bootstrap
-- app/integrations/aquira/service.py — Aquira session and request flows with 401 retry semantics
-- app/aquira/contracts.py and app/mapping/revenue.py — contract normalization and revenue-period allocation
-- app/db/models.py and app/db/repo.py — DB-backed sync state, run history, and mapping tables
-- app/sync/orchestrator.py and app/sync/whatif.py — orchestration and safe planning flows
+- app/main.py — FastAPI bootstrap, health, root UI redirect, `/sync/*` aliases
+- app/settings.py — environment-driven settings and runtime flags (what-if defaults on)
+- app/aquira/client.py — live Aquira session, catalog load, sparse client/contact writes
+- app/hubspot/client.py — HubSpot CRM v3/v4, owner lookup, schema bootstrap, projection
+- app/mapping/revenue.py — monthly revenue-period allocation
+- app/db/models.py and app/db/repo.py — Postgres-backed sync state, runs, owner map, webhook receipts
+- app/sync/orchestrator.py and app/sync/planner.py — live pull, plan, apply
+- app/webhooks/routes.py — HubSpot identity webhooks
+- app/ui — operator console
+- docker-compose.yml / Dockerfile — Portainer production stack
 
 ## Intended behavior
-- Continue the live integration path without regressing the validated runtime foundation
-- Bootstrap HubSpot custom properties as needed for Aquira client/contract synchronization
-- Keep WHAT-IF planning and Aquira retry behavior in place before broader writes are enabled
-- Preserve the project’s SQLite-first local execution model while preparing for production deployment
-- Implement the HubSpot company and contact upsert flow, including parent-child company linkage and contact association
-
-## Risks and assumptions
-- Real HubSpot property creation must be idempotent and rely on a pre-flight property listing
-- Aquira response envelopes remain authoritative; every business failure is treated as an exception rather than a 200 OK
-- The current green pytest baseline is the safety gate before additional runtime features are expanded
-- Contact/company association endpoints depend on the exact HubSpot object relationship type and property naming in the target portal
+- Connect to live Aquira and HubSpot. No production mock path.
+- Bootstrap HubSpot custom properties and the `revenue_period` custom object
+- Keep WHAT-IF planning as the default until an operator turns it off
+- HubSpot is source of truth for identity; Aquira is source of truth for contracts
+- Never write Aquira contracts from HubSpot
 
 ## Validation steps
-- Run the project pytest task using the workspace venv after every edit
-- Keep the integration layer incremental and avoid large rewrites until the sync contract is fully exercised by tests
-- Re-check the HubSpot object association payloads after every new write path is introduced
+- `pytest -q` after every edit
+- `python scripts/live_check.py` against real credentials before the first live write

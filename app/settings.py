@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,18 +17,19 @@ class Settings(BaseSettings):
     environment: str = "development"
     log_level: str = "INFO"
     timezone: str = "America/Chicago"
+    public_base_url: str = ""
 
     aquira_base_url: str = "https://aquira2go.kcbieng.org/Aquira_WebAPI"
     aquira_username: str = ""
     aquira_password: str = ""
     hubspot_access_token: str = ""
-    hubspot_client_secret: str = "dev-secret"
+    hubspot_client_secret: str = ""
     database_url: str = "sqlite:///./app.db"
     sync_interval_minutes: int = 30
-    whatif: bool = False
+    whatif: bool = True
     sync_calls: bool = False
     sync_create_aquira_client: bool = True
-    settings_fernet_key: str = "dev-change-me"
+    settings_fernet_key: str = ""
     ui_username: str = "admin"
     ui_password: str = "admin"
     bootstrap_hubspot: bool = True

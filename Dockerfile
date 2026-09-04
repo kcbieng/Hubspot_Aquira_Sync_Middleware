@@ -20,4 +20,7 @@ COPY README.md ./README.md
 USER appuser
 EXPOSE 8080
 
+HEALTHCHECK --interval=15s --timeout=10s --start-period=25s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health').read()"
+
 CMD ["python", "-m", "app"]

@@ -15,6 +15,14 @@ from app.aquira.normalize import (
 )
 from app.settings import get_settings
 
+SESSION_ERROR_NAMES = {
+    "sessionexpired",
+    "unauthorized",
+    "notloggedin",
+    "notauthenticated",
+    "invalidsession",
+}
+
 
 class AquiraApiError(RuntimeError):
     def __init__(self, message: str, *, error: Any = None, error_name: str | None = None, errors: Any = None):
@@ -43,15 +51,26 @@ def validate_response(payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _session_lost(status_code: int, payload: dict[str, Any]) -> bool:
+    if status_code == 401:
+        return True
+    name = str(payload.get("ErrorName") or "").lower().replace(" ", "")
+    text = str(payload.get("ErrorText") or "").lower()
+    if payload.get("Success") is False and (name in SESSION_ERROR_NAMES or "session" in text or "not logged" in text):
+        return True
+    return False
+
+
 class AquiraSessionClient:
     def __init__(self, base_url: str | None = None, username: str | None = None, password: str | None = None):
         settings = get_settings()
         self.base_url = (base_url or settings.aquira_base_url).rstrip("/")
         self.username = username if username is not None else settings.aquira_username
         self.password = password if password is not None else settings.aquira_password
-        self.client = httpx.Client(base_url=self.base_url, timeout=30.0, follow_redirects=True)
+        self.client = httpx.Client(base_url=self.base_url, timeout=60.0, follow_redirects=True)
         self.logged_in = False
         self.version: str | None = None
+        self._retrying = False
 
     def login(self) -> dict[str, Any]:
         if not self.username or not self.password:
@@ -76,15 +95,30 @@ class AquiraSessionClient:
 
     def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         response = self.client.request(method, path, **kwargs)
-        if response.status_code == 401:
-            self.login()
-            response = self.client.request(method, path, **kwargs)
         try:
             payload = response.json() if getattr(response, "content", True) else {}
-        except Exception as exc:
-            raise AquiraApiError(f"Aquira {method} {path} returned non-JSON (HTTP {response.status_code})") from exc
+        except Exception:
+            payload = {}
         if not isinstance(payload, dict):
             payload = {"Success": True, "Data": payload}
+        if _session_lost(response.status_code, payload) and not self._retrying:
+            self._retrying = True
+            try:
+                self.login()
+                response = self.client.request(method, path, **kwargs)
+            finally:
+                self._retrying = False
+            try:
+                payload = response.json() if getattr(response, "content", True) else {}
+            except Exception as exc:
+                raise AquiraApiError(f"Aquira {method} {path} returned non-JSON (HTTP {response.status_code})") from exc
+            if not isinstance(payload, dict):
+                payload = {"Success": True, "Data": payload}
+        elif not payload and response.content:
+            try:
+                payload = response.json()
+            except Exception as exc:
+                raise AquiraApiError(f"Aquira {method} {path} returned non-JSON (HTTP {response.status_code})") from exc
         if response.status_code >= 400 or payload.get("Success") is False:
             raise AquiraApiError(
                 payload.get("ErrorText")
@@ -129,7 +163,11 @@ class AquiraSessionClient:
         return client
 
     def lookup_contacts(self, client_id: str | int) -> list[dict[str, Any]]:
-        payload = self.try_request("POST", "/Client/LookupContacts", json={"ClientID": int(client_id) if str(client_id).isdigit() else client_id, "SearchTerm": ""})
+        payload = self.try_request(
+            "POST",
+            "/Client/LookupContacts",
+            json={"ClientID": int(client_id) if str(client_id).isdigit() else client_id, "SearchTerm": ""},
+        )
         if not payload:
             return []
         rows: list[dict[str, Any]] = []
@@ -210,6 +248,8 @@ class AquiraSessionClient:
         return normalize_contract(payload, lines)
 
     def load_sales_reps(self) -> list[dict[str, Any]]:
+        if not self.logged_in:
+            self.login()
         payload = self.try_request("POST", "/User/Lookup", json={"salesReps": True, "CurrentOnly": True, "SearchTerm": ""})
         if not payload:
             payload = self.try_request("POST", "/User/Lookup", json={"salesReps": True})
@@ -223,6 +263,8 @@ class AquiraSessionClient:
         return list(by_id.values())
 
     def load_catalog(self, aquira_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        if not self.logged_in:
+            self.login()
         clients = self.search_clients(aquira_id or "")
         if aquira_id:
             needle = aquira_id.lower()
@@ -250,7 +292,13 @@ class AquiraSessionClient:
             contracts = [
                 contract
                 for contract in contracts
-                if aquira_id in {str(contract.get("ID")), str(contract.get("AccountID")), str(contract.get("AdvertiserID")), str(contract.get("ContractCD"))}
+                if aquira_id
+                in {
+                    str(contract.get("ID")),
+                    str(contract.get("AccountID")),
+                    str(contract.get("AdvertiserID")),
+                    str(contract.get("ContractCD")),
+                }
             ]
         loaded_contracts: list[dict[str, Any]] = []
         for contract in contracts:
@@ -273,6 +321,44 @@ class AquiraSessionClient:
             if value is None:
                 continue
             sparse[key] = {"Value": value, "Valid": True}
+        return self.request("PUT", "/Client/Put", json={"Save": True, "Sparse": True, "Entity": sparse})
+
+    def update_contact_sparse(self, client_id: str | int, contact_id: str | int, fields: dict[str, Any]) -> dict[str, Any]:
+        loaded = self.request("POST", f"/Client/Load/{client_id}")
+        entity = unwrap_deep(loaded.get("Entity") or loaded)
+        if not isinstance(entity, dict):
+            entity = {}
+        contacts = list(entity.get("Contacts") or [])
+        if not contacts:
+            contacts = self.lookup_contacts(client_id)
+        found = False
+        wrapped: list[dict[str, Any]] = []
+        for contact in contacts:
+            row = dict(contact) if isinstance(contact, dict) else {}
+            ident = unwrap_field_value(row.get("ID") or row.get("Id") or row.get("ContactID"))
+            if str(ident) == str(contact_id):
+                found = True
+                for key, value in fields.items():
+                    if value is None:
+                        continue
+                    row[key] = {"Value": value, "Valid": True}
+            wrapped.append(
+                {
+                    "ID": ident,
+                    "FirstName": {"Value": unwrap_field_value(row.get("FirstName")), "Valid": True},
+                    "LastName": {"Value": unwrap_field_value(row.get("LastName")), "Valid": True},
+                    "Email": {"Value": unwrap_field_value(row.get("Email")), "Valid": True},
+                    "Phone": {"Value": unwrap_field_value(row.get("Phone")), "Valid": True},
+                }
+            )
+        if not found:
+            raise AquiraApiError(f"Aquira contact {contact_id} was not found on client {client_id}")
+        sparse: dict[str, Any] = {
+            "ID": int(client_id) if str(client_id).isdigit() else client_id,
+            "Contacts": wrapped,
+        }
+        if entity.get("Version") is not None:
+            sparse["Version"] = entity.get("Version")
         return self.request("PUT", "/Client/Put", json={"Save": True, "Sparse": True, "Entity": sparse})
 
     def create_client(self, fields: dict[str, Any]) -> dict[str, Any]:

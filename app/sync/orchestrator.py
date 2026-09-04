@@ -320,7 +320,11 @@ class SyncOrchestrator:
                 aquira.update_client_sparse(item["aquiraId"], item.get("properties") or {})
             else:
                 fields = item.get("properties") or {}
-                aquira.update_client_sparse(item["aquiraId"], {"Email": fields.get("Email"), "Phone": fields.get("Phone")})
+                client_id = (item.get("associations") or {}).get("clientId") or fields.get("ClientID")
+                if client_id and hasattr(aquira, "update_contact_sparse"):
+                    aquira.update_contact_sparse(client_id, item["aquiraId"], fields)
+                else:
+                    aquira.update_client_sparse(item["aquiraId"], {"Email": fields.get("Email"), "Phone": fields.get("Phone")})
             return item
 
         if item.get("action") == "delete-stale" and item.get("hubspotId"):
@@ -440,6 +444,29 @@ class SyncOrchestrator:
 
             applied: list[dict[str, Any]] = []
             if not items:
+                if warnings:
+                    message = "; ".join(warnings)
+                    if hasattr(run, "status"):
+                        run.status = "error"
+                    if hasattr(run, "error"):
+                        run.error = message
+                    if hasattr(run, "finished_at"):
+                        run.finished_at = datetime.utcnow()
+                    if hasattr(repo, "session"):
+                        repo.session.commit()
+                    repo.add_event("sync", "ERROR", "sync failed before planning", {"warnings": warnings})
+                    return {
+                        "status": "error",
+                        "trigger": context.trigger,
+                        "whatif": context.whatif,
+                        "entities": entities,
+                        "started_at": started_at.isoformat(),
+                        "run_id": getattr(run, "id", None),
+                        "counts": {},
+                        "warnings": warnings,
+                        "item_count": 0,
+                        "error": message,
+                    }
                 for entity in entities:
                     repo.add_run_item(
                         run.id,

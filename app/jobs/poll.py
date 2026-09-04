@@ -30,7 +30,7 @@ class PollJob:
         if job is None:
             self.schedule(interval_minutes)
             return
-        job.reschedule("interval", minutes=interval_minutes)
+        job.reschedule("interval", minutes=max(int(interval_minutes), 1))
 
     def run(self) -> dict[str, Any]:
         from app.db.repo import Repo
@@ -50,3 +50,16 @@ class PollJob:
                 "message": str(exc),
                 "timestamp": datetime.utcnow().isoformat(),
             }
+
+
+_active_job: PollJob | None = None
+
+
+def set_active_job(job: PollJob | None) -> None:
+    global _active_job
+    _active_job = job
+
+
+def reschedule_active(interval_minutes: int) -> None:
+    if _active_job is not None:
+        _active_job.reschedule(interval_minutes)

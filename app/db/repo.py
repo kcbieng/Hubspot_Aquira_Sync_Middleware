@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
-from app.db.models import AppSetting, DeadLetter, IdMap, JobEvent, OwnerMap, SyncCursor, SyncRun, SyncRunItem
+from app.db.models import AppSetting, DeadLetter, IdMap, JobEvent, OwnerMap, SyncCursor, SyncRun, SyncRunItem, WebhookReceipt
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:
@@ -183,3 +183,18 @@ class Repo:
 
     def list_owner_maps(self) -> list[OwnerMap]:
         return self.session.execute(select(OwnerMap)).scalars().all()
+
+    def seen_webhook(self, message_id: str) -> bool:
+        if not message_id:
+            return False
+        row = self.session.get(WebhookReceipt, message_id)
+        return row is not None
+
+    def mark_webhook(self, message_id: str) -> None:
+        if not message_id:
+            return
+        if self.session.get(WebhookReceipt, message_id) is not None:
+            return
+        self.session.add(WebhookReceipt(message_id=message_id))
+        self.session.commit()
+

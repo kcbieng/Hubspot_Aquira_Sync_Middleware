@@ -88,7 +88,15 @@ def persist_settings(values: dict[str, Any]) -> Settings:
         if key in SECRET_KEYS:
             stored = encrypt_value(stored)
         repo.set_setting(key, stored)
+    if "sync_interval_minutes" in values:
+        try:
+            from app.jobs.poll import reschedule_active
+
+            reschedule_active(int(settings.sync_interval_minutes))
+        except Exception:
+            pass
     return settings
+
 
 
 def apply_db_overlay() -> Settings:

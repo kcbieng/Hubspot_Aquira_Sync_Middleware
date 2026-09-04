@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
@@ -84,7 +83,7 @@ class SyncRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     trigger: Mapped[str] = mapped_column(String(50), default="manual")
-    whatif: Mapped[bool] = mapped_column(Boolean, default=False)
+    whatif: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(20), default="pending")
     summary_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -101,3 +100,10 @@ class SyncRunItem(Base):
     action: Mapped[str] = mapped_column(String(20))
     diff_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class WebhookReceipt(Base):
+    __tablename__ = "webhook_receipt"
+
+    message_id: Mapped[str] = mapped_column(String(200), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

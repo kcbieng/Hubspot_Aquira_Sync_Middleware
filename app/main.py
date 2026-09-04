@@ -1,11 +1,12 @@
 from contextlib import asynccontextmanager
+import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.api.routes import router as api_router
-from app.jobs.poll import PollJob
+from app.api.routes import _run_sync_now, router as api_router, run_sync_client, run_sync_contract, sync_status_stub
+from app.jobs.poll import PollJob, set_active_job
 from app.runtime import apply_db_overlay
 from app.settings import get_settings
 from app.ui.routes import router as ui_router
@@ -14,18 +15,33 @@ from app.webhooks.routes import router as webhook_router
 poll_job: PollJob | None = None
 
 
+def _configure_logging() -> None:
+    settings = get_settings()
+    logging.basicConfig(
+        level=getattr(logging, str(settings.log_level).upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    if settings.environment == "production" and settings.ui_password in {"admin", "password", ""}:
+        logging.getLogger("app").warning("UI_PASSWORD is weak; set a strong password in the stack environment.")
+    if not settings.settings_fernet_key:
+        logging.getLogger("app").warning("SETTINGS_FERNET_KEY is empty; generate one before storing secrets from the UI.")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     global poll_job
+    _configure_logging()
     apply_db_overlay()
     settings = get_settings()
     scheduler = BackgroundScheduler(timezone=settings.timezone)
     scheduler.start()
     poll_job = PollJob(scheduler)
     poll_job.schedule(settings.sync_interval_minutes)
+    set_active_job(poll_job)
     try:
         yield
     finally:
+        set_active_job(None)
         scheduler.shutdown(wait=False)
 
 
@@ -33,6 +49,11 @@ app = FastAPI(title="Aquira HubSpot Middleware", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(ui_router)
 app.include_router(webhook_router)
+
+
+@app.get("/")
+def root():
+    return RedirectResponse(url="/ui", status_code=302)
 
 
 @app.get("/health")
@@ -51,18 +72,16 @@ def ready() -> JSONResponse:
     hubspot_ready = bool(settings.hubspot_access_token)
     last_success = cursor.last_success_at.isoformat() if cursor and cursor.last_success_at else None
     last_error = cursor.last_error if cursor else None
-    status = "ready" if aquira_ready and hubspot_ready else "degraded"
     payload = {
-        "status": status if status == "ready" else "ready",
+        "status": "ready",
         "environment": settings.environment,
         "aquira_configured": aquira_ready,
         "hubspot_configured": hubspot_ready,
         "whatif": settings.whatif,
         "last_success_at": last_success,
         "last_error": last_error,
+        "configured": aquira_ready and hubspot_ready,
     }
-    # Keep /ready 200 for process liveness; operators use the flags to see config.
-    payload["status"] = "ready"
     return JSONResponse(payload)
 
 
@@ -85,3 +104,23 @@ def metrics() -> dict[str, object]:
         "last_error": cursor.last_error if cursor else None,
         "running": bool(poll_job and poll_job.orchestrator._active) if poll_job else False,
     }
+
+
+@app.post("/sync/run")
+def sync_run_alias(payload: dict[str, object] | None = None) -> dict[str, object]:
+    return _run_sync_now(payload, trigger="manual")
+
+
+@app.post("/sync/client/{aquira_id}")
+def sync_client_alias(aquira_id: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+    return run_sync_client(aquira_id, payload)
+
+
+@app.post("/sync/contract/{aquira_id}")
+def sync_contract_alias(aquira_id: str, payload: dict[str, object] | None = None) -> dict[str, object]:
+    return run_sync_contract(aquira_id, payload)
+
+
+@app.get("/sync/status")
+def sync_status_alias() -> dict[str, object]:
+    return sync_status_stub()

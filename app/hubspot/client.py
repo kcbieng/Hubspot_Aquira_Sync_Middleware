@@ -597,12 +597,22 @@ class HubSpotClient:
                 return self.revenue_object_type
             raise
 
+    def get_record(self, object_type: str, ident: str, properties: list[str]) -> dict[str, Any]:
+        row = self._request(
+            "GET",
+            f"/crm/v3/objects/{object_type}/{ident}",
+            params={"properties": ",".join(properties)},
+        )
+        return {"id": str(row.get("id") or ident), "properties": row.get("properties") or {}}
+
     def companies_with_aquira(self) -> list[dict[str, Any]]:
-        return self.search_all(
+        rows = self.search_all(
             "companies",
             ["name", "phone", "domain", "address", "city", "state", "website", "aquira_id", "aquira_party_type", "aquira_version"],
             {"propertyName": "aquira_id", "operator": "HAS_PROPERTY"},
         )
+        return [row for row in rows if (row.get("properties") or {}).get("aquira_id")]
+
 
     def companies_without_aquira(self) -> list[dict[str, Any]]:
         return self.search_all(
@@ -612,11 +622,13 @@ class HubSpotClient:
         )
 
     def contacts_with_aquira(self) -> list[dict[str, Any]]:
-        return self.search_all(
+        rows = self.search_all(
             "contacts",
             ["firstname", "lastname", "email", "phone", "aquira_id", "aquira_entity_type", "aquira_client_id"],
             {"propertyName": "aquira_id", "operator": "HAS_PROPERTY"},
         )
+        return [row for row in rows if (row.get("properties") or {}).get("aquira_id")]
+
 
     def deals_with_aquira(self) -> list[dict[str, Any]]:
         return self.search_all(
