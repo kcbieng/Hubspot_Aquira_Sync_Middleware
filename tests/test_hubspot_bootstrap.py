@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from app.hubspot.client import HubSpotClient
 
 
@@ -15,6 +17,14 @@ def test_hubspot_ensure_properties_creates_missing_fields():
     assert created == ["aquira_id", "aquira_party_type"]
     assert get_mock.call_count == 1
     assert create_mock.call_count == 2
+
+
+def test_hubspot_validate_required_properties_raises_clear_error_when_missing():
+    client = HubSpotClient(access_token="token")
+
+    with patch.object(client, "get_properties", return_value={"results": [{"name": "domain"}]}) :
+        with pytest.raises(ValueError, match="Missing required HubSpot company properties: aquira_id, aquira_party_type"):
+            client.validate_required_properties("company", ["domain", "aquira_id", "aquira_party_type"])
 
 
 def test_hubspot_builds_company_payload_from_aquira_client():

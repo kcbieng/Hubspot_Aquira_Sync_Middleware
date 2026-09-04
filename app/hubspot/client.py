@@ -77,6 +77,13 @@ class HubSpotClient:
             created.append(name)
         return created
 
+    def validate_required_properties(self, object_type: str, required_names: list[str]) -> None:
+        payload = self.get_properties(object_type)
+        existing = {item.get("name") for item in payload.get("results", []) if isinstance(item, dict) and item.get("name")}
+        missing = [name for name in required_names if name not in existing]
+        if missing:
+            raise ValueError(f"Missing required HubSpot {object_type} properties: {', '.join(missing)}")
+
     def build_company_payload(self, aquira_client: dict[str, Any]) -> dict[str, Any]:
         is_account = bool(_unwrap(aquira_client.get("IsAccount")) is True)
         is_advertiser = bool(_unwrap(aquira_client.get("IsAdvertiser")) is True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 from pydantic import Field
@@ -33,6 +34,16 @@ class Settings(BaseSettings):
     ui_username: str = "admin"
     ui_password: str = "admin"
     bootstrap_hubspot: bool = True
+
+    @property
+    def effective_database_url(self) -> str:
+        url = (self.database_url or "sqlite:///./app.db").strip()
+        if url.startswith("postgresql"):
+            try:
+                import psycopg2  # noqa: F401
+            except ModuleNotFoundError:
+                return "sqlite:///./app.db"
+        return url
 
 
 @lru_cache

@@ -48,7 +48,6 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       BOOTSTRAP_HUBSPOT: ${BOOTSTRAP_HUBSPOT:-true}
     volumes:
-      - app_data:/app
       - ./logs:/var/log/aquira
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health').read()"]
@@ -60,7 +59,6 @@ services:
       - app-network
 
 volumes:
-  app_data:
   postgres_data:
 
 networks:
