@@ -1,11 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
   <div class="panel-card p-4 p-md-5 mb-4">
-    <h2 class="mb-3">Event log</h2>
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Audit trail</div>
+        <h2 class="mb-0">Event log</h2>
+      </div>
+    </div>
+
     {% if events %}
       <div class="vstack gap-3">
         {% for event in events %}
-          <div class="border rounded p-3 bg-light-subtle">
+          <div class="panel-card-soft p-3">
             <div class="d-flex justify-content-between gap-3">
               <strong>{{ event.level }}</strong>
               <span class="small text-muted">{{ event.ts }}</span>

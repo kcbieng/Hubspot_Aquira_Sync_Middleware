@@ -30,13 +30,23 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-    env_file:
-      - stack.env
     environment:
       TZ: America/Chicago
-      DATABASE_URL: postgresql://middleware:middleware_password@db:5432/aquira_hubspot
+      AQUIRA_BASE_URL: ${AQUIRA_BASE_URL:-https://aquira2go.kcbieng.org/Aquira_WebAPI}
+      AQUIRA_USERNAME: ${AQUIRA_USERNAME:-}
+      AQUIRA_PASSWORD: ${AQUIRA_PASSWORD:-}
+      HUBSPOT_ACCESS_TOKEN: ${HUBSPOT_ACCESS_TOKEN:-}
+      HUBSPOT_CLIENT_SECRET: ${HUBSPOT_CLIENT_SECRET:-dev-secret}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://middleware:middleware_password@db:5432/aquira_hubspot}
+      SETTINGS_FERNET_KEY: ${SETTINGS_FERNET_KEY:-dev-change-me}
       UI_USERNAME: ${UI_USERNAME:-admin}
       UI_PASSWORD: ${UI_PASSWORD:-admin}
+      SYNC_INTERVAL_MINUTES: ${SYNC_INTERVAL_MINUTES:-30}
+      WHATIF: ${WHATIF:-true}
+      SYNC_CALLS: ${SYNC_CALLS:-false}
+      SYNC_CREATE_AQURA_CLIENT: ${SYNC_CREATE_AQURA_CLIENT:-true}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      BOOTSTRAP_HUBSPOT: ${BOOTSTRAP_HUBSPOT:-true}
     volumes:
       - app_data:/app
       - ./logs:/var/log/aquira

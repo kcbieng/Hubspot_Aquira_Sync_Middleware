@@ -1,22 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
-  <div class="panel-card p-4 p-md-5">
-    <h2 class="mb-4">Login</h2>
-    {% if error %}
-      <div class="alert alert-danger" role="alert">{{ error }}</div>
-    {% endif %}
-    <form method="post" action="/ui/login" class="row g-3">
-      <div class="col-12">
-        <label class="form-label">Username</label>
-        <input type="text" class="form-control" name="username" placeholder="admin" />
+  <div class="row justify-content-center py-5">
+    <div class="col-lg-5">
+      <div class="panel-card p-4 p-md-5">
+        <div class="text-center mb-4">
+          <div class="brand-mark justify-content-center mb-3 text-decoration-none" style="color: #0f172a;">
+            <span class="brand-icon" style="background: #dbeafe; color: #1d4ed8;">A</span>
+            <span class="fw-bold fs-5">Operator Access</span>
+          </div>
+          <h2 class="mb-0">Login</h2>
+        </div>
+        {% if error %}
+          <div class="alert alert-danger" role="alert">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/ui/login" class="row g-3">
+          <div class="col-12">
+            <label class="form-label">Username</label>
+            <input type="text" class="form-control" name="username" placeholder="admin" />
+          </div>
+          <div class="col-12">
+            <label class="form-label">Password</label>
+            <input type="password" class="form-control" name="password" placeholder="admin" />
+          </div>
+          <div class="col-12 mt-3">
+            <button type="submit" class="btn btn-primary w-100">Sign in</button>
+          </div>
+        </form>
       </div>
-      <div class="col-12">
-        <label class="form-label">Password</label>
-        <input type="password" class="form-control" name="password" placeholder="admin" />
-      </div>
-      <div class="col-12 mt-3">
-        <button type="submit" class="btn btn-primary">Sign in</button>
-      </div>
-    </form>
+    </div>
   </div>
 {% endblock %}

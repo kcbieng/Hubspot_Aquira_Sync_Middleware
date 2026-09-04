@@ -1,11 +1,17 @@
 {% extends "base.html" %}
 {% block content %}
   <div class="panel-card p-4 p-md-5 mb-4">
-    <h2 class="mb-3">Runs</h2>
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">History</div>
+        <h2 class="mb-0">Runs</h2>
+      </div>
+    </div>
+
     {% if runs %}
-      <div class="list-group">
+      <div class="list-group list-group-flush">
         {% for run in runs %}
-          <a class="list-group-item list-group-item-action" href="/ui/runs/{{ run.id }}">
+          <a class="list-group-item list-group-item-action rounded-3 mb-2 border" href="/ui/runs/{{ run.id }}">
             <div class="d-flex justify-content-between align-items-center">
               <strong>Run #{{ run.id }}</strong>
               <span class="badge text-bg-light">{{ 'what-if' if run.whatif else 'live' }}</span>

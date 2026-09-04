@@ -1,37 +1,42 @@
 {% extends "base.html" %}
 {% block content %}
   <div class="panel-card p-4 p-md-5 mb-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h2 class="mb-0">Dashboard</h2>
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Operations</div>
+        <h2 class="mb-0">Dashboard</h2>
+      </div>
       <span class="status-pill {{ 'ok' if settings.whatif else 'warn' }}">{{ mode_label }}</span>
     </div>
 
-    <div class="row g-3 mb-3">
+    <div class="row g-3 mb-4">
       <div class="col-md-4">
-        <div class="bg-light rounded p-3 h-100">
-          <div class="text-muted small text-uppercase">Environment</div>
-          <div class="fw-semibold fs-5">{{ settings.environment }}</div>
+        <div class="metric-card">
+          <div class="metric-label">Environment</div>
+          <div class="metric-value">{{ settings.environment }}</div>
         </div>
       </div>
       <div class="col-md-4">
-        <div class="bg-light rounded p-3 h-100">
-          <div class="text-muted small text-uppercase">Timezone</div>
-          <div class="fw-semibold fs-5">{{ settings.timezone }}</div>
+        <div class="metric-card">
+          <div class="metric-label">Timezone</div>
+          <div class="metric-value">{{ settings.timezone }}</div>
         </div>
       </div>
       <div class="col-md-4">
-        <div class="bg-light rounded p-3 h-100">
-          <div class="text-muted small text-uppercase">Status</div>
-          <div class="fw-semibold fs-5">{{ status }}</div>
+        <div class="metric-card">
+          <div class="metric-label">Status</div>
+          <div class="metric-value">{{ status }}</div>
         </div>
       </div>
     </div>
 
-    <ul class="list-group list-group-flush mb-4">
-      <li class="list-group-item"><strong>Aquira:</strong> {{ settings.aquira_base_url }}</li>
-      <li class="list-group-item"><strong>HubSpot token:</strong> {{ 'configured' if settings.hubspot_access_token else 'missing' }}</li>
-      <li class="list-group-item"><strong>What-if:</strong> {{ settings.whatif }}</li>
-    </ul>
+    <div class="panel-card-soft p-3 p-md-4 mb-4">
+      <ul class="list-group list-group-flush border-0">
+        <li class="list-group-item bg-transparent px-0 py-2"><strong>Aquira:</strong> {{ settings.aquira_base_url }}</li>
+        <li class="list-group-item bg-transparent px-0 py-2"><strong>HubSpot token:</strong> {{ 'configured' if settings.hubspot_access_token else 'missing' }}</li>
+        <li class="list-group-item bg-transparent px-0 py-2"><strong>What-if:</strong> {{ settings.whatif }}</li>
+      </ul>
+    </div>
   </div>
 
   <div class="panel-card p-4 p-md-5 mb-4">
@@ -56,7 +61,7 @@
   <div class="panel-card p-4 p-md-5 mb-4">
     <h3 class="mb-3">Operations</h3>
     <form method="post" action="/ui/sync/run">
-      <button type="submit" class="btn btn-success">Run sync</button>
+      <button type="submit" class="btn btn-success btn-lg">Run sync</button>
     </form>
   </div>
 
@@ -66,7 +71,7 @@
     {% if sync_items %}
       <div class="vstack gap-3">
         {% for item in sync_items %}
-          <div class="border rounded p-3 bg-light-subtle">
+          <div class="panel-card-soft p-3">
             <div class="fw-semibold">
               {{ item.entity_type }} — {{ item.action }} ({{ item.mode }})
             </div>

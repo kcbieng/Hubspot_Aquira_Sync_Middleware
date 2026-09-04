@@ -1,28 +1,32 @@
 {% extends "base.html" %}
 {% block content %}
   <div class="panel-card p-4 p-md-5 mb-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-      <h2 class="mb-0">Owner mapping</h2>
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Ownership</div>
+        <h2 class="mb-0">Owner mapping</h2>
+      </div>
       <button class="btn btn-primary btn-sm" type="button">Suggest matches</button>
     </div>
+
     <div class="row g-3">
       <div class="col-md-6">
-        <div class="border rounded p-3 bg-light-subtle">
-          <h5>Aquira sales reps</h5>
+        <div class="panel-card-soft p-3 h-100">
+          <h5 class="mb-3">Aquira sales reps</h5>
           <p class="text-muted small mb-3">Live lookup support is exposed through the API for this page.</p>
           <div class="list-group list-group-flush">
-            <div class="list-group-item">Example rep: Jane Smith</div>
-            <div class="list-group-item">Example rep: John Doe</div>
+            <div class="list-group-item bg-transparent">Example rep: Jane Smith</div>
+            <div class="list-group-item bg-transparent">Example rep: John Doe</div>
           </div>
         </div>
       </div>
       <div class="col-md-6">
-        <div class="border rounded p-3 bg-light-subtle">
-          <h5>HubSpot owners</h5>
+        <div class="panel-card-soft p-3 h-100">
+          <h5 class="mb-3">HubSpot owners</h5>
           <p class="text-muted small mb-3">Use the JSON owner endpoints to refresh and map owners.</p>
           <div class="list-group list-group-flush">
-            <div class="list-group-item">Owner: Amy North</div>
-            <div class="list-group-item">Owner: Sam Lee</div>
+            <div class="list-group-item bg-transparent">Owner: Amy North</div>
+            <div class="list-group-item bg-transparent">Owner: Sam Lee</div>
           </div>
         </div>
       </div>

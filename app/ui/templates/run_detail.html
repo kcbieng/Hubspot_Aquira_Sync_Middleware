@@ -2,16 +2,22 @@
 {% block content %}
   <div class="panel-card p-4 p-md-5 mb-4">
     {% if run %}
-      <h2 class="mb-3">Run #{{ run.id }}</h2>
-      <div class="mb-3">
-        <span class="badge text-bg-light me-2">{{ 'what-if' if run.whatif else 'live' }}</span>
-        <span class="badge text-bg-secondary">{{ run.status }}</span>
+      <div class="page-header">
+        <div>
+          <div class="text-uppercase small text-primary fw-bold mb-1">Execution</div>
+          <h2 class="mb-0">Run #{{ run.id }}</h2>
+        </div>
+        <div>
+          <span class="badge text-bg-light me-2">{{ 'what-if' if run.whatif else 'live' }}</span>
+          <span class="badge text-bg-secondary">{{ run.status }}</span>
+        </div>
       </div>
+
       <p class="text-muted mb-3">Trigger: {{ run.trigger }} • Started: {{ run.started_at }} • Finished: {{ run.finished_at }}</p>
       {% if items %}
         <div class="vstack gap-3">
           {% for item in items %}
-            <div class="border rounded p-3 bg-light-subtle">
+            <div class="panel-card-soft p-3">
               <div class="fw-semibold">{{ item.entity_type }} — {{ item.action }}</div>
               <div class="small text-muted">Aquira: {{ item.aquira_id }} • HubSpot: {{ item.hubspot_id }}</div>
               {% if item.diff_json %}

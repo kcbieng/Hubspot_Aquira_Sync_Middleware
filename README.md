@@ -12,9 +12,9 @@ The project is implemented and verified against the current test suite.
 - Maps Aquira client records into HubSpot company and contact objects
 - Tracks contract/proposal deals and associated revenue periods
 - Supports safe what-if planning without mutating external systems
-- Exposes a small web UI for login, settings, and dashboard access
+- Exposes a full operator UI for login, dashboard, settings, owner mapping, runs, and event logs
 - Uses SQLite by default for local development and supports environment-based DB configuration for deployment
-- Includes webhook support and background sync orchestration hooks
+- Includes webhook support, run history, owner mapping persistence, and background sync orchestration hooks
 
 ## Core architecture
 
@@ -69,7 +69,7 @@ The project is implemented and verified against the current test suite.
 - Python 3.12
 - A local or virtual environment
 - Access to Aquira WebAPI credentials
-- A HubSpot private app token if you plan to hit live CRM APIs
+- A HubSpot private app token if you want to hit live CRM APIs or test owner listing
 
 ### 2) Create the environment
 
@@ -122,6 +122,9 @@ UI_USERNAME=admin
 UI_PASSWORD=admin
 WHATIF=true
 SYNC_INTERVAL_MINUTES=30
+SYNC_CALLS=false
+SYNC_CREATE_AQUIRA_CLIENT=true
+BOOTSTRAP_HUBSPOT=true
 LOG_LEVEL=INFO
 ```
 
@@ -144,10 +147,24 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 
 The service will be available at:
 
-- Health endpoint: `http://localhost:8080/health`
-- Ready endpoint: `http://localhost:8080/ready`
-- Login page: `http://localhost:8080/ui/login`
+- Health: `http://localhost:8080/health`
+- Ready: `http://localhost:8080/ready`
+- Login: `http://localhost:8080/ui/login`
 - Dashboard: `http://localhost:8080/ui`
+- Settings: `http://localhost:8080/ui/settings`
+- Owner map: `http://localhost:8080/ui/owners`
+- Runs: `http://localhost:8080/ui/runs`
+- Event log: `http://localhost:8080/ui/logs`
+
+### 6) Operate the app
+
+After logging in with the default admin credentials:
+
+- Use the dashboard to toggle what-if mode and trigger a sync
+- Use settings to save interval and runtime values
+- Use owner mapping to review Aquira vs HubSpot rep mapping
+- Review the run history and item diffs under the runs pages
+- Check debug output in the event log
 
 ## Docker quick start
 
@@ -208,6 +225,11 @@ The FastAPI app starts a background APScheduler-based job when the service begin
 - `GET /ui/login`
 - `POST /ui/login`
 - `GET /ui`
+- `GET /ui/settings`
+- `GET /ui/owners`
+- `GET /ui/runs`
+- `GET /ui/runs/{id}`
+- `GET /ui/logs`
 
 ### API routes
 
@@ -215,12 +237,22 @@ The FastAPI app starts a background APScheduler-based job when the service begin
 - `POST /api/logout`
 - `GET /api/settings`
 - `PUT /api/settings`
-- `GET /api/sync/status`
+- `POST /api/settings/test/aquira`
+- `POST /api/settings/test/hubspot`
+- `GET /api/owners/aquira`
+- `GET /api/owners/hubspot`
 - `GET /api/owners/map`
+- `GET /api/owners/suggest`
+- `PUT /api/owners/map`
+- `GET /api/sync/status`
+- `POST /api/sync/run`
+- `GET /api/sync/runs`
+- `GET /api/sync/runs/{id}`
+- `PUT /api/settings/whatif`
 
 ### Webhook endpoints
 
-- HubSpot webhook handlers are mounted under the service webhook router and intended to validate signatures and deduplicate inbound events.
+- `POST /webhooks/hubspot` validates the HubSpot signature and deduplicates message IDs before any writeback work is queued.
 
 ## Database and sync state
 
@@ -237,7 +269,7 @@ pytest -q
 The current verified baseline is green with the project venv:
 
 ```text
-42 passed in 3.35s
+48 passed in 5.48s
 ```
 
 ## Troubleshooting
