@@ -1,5 +1,6 @@
 from app.api.routes import owner_map
-from app.mapping.owners import classify_hubspot_user, suggest_owner_map
+from app.mapping.owners import classify_hubspot_user, expand_owner_lookup, suggest_owner_map
+from app.aquira.normalize import normalize_rep
 
 
 def test_owner_suggest_prefers_email_then_name():
@@ -84,3 +85,20 @@ def test_owner_map_builds_live_aquira_to_hubspot_mapping(monkeypatch):
     assert mapping[0]["hubspot_owner_id"] == "hs-1"
     assert mapping[0]["enabled"] is True
     assert mapping[1]["hubspot_owner_id"] == "hs-2"
+
+
+def test_normalize_rep_keeps_user_id_and_sales_rep_id():
+    rep = normalize_rep({"ID": 123, "SalesRepID": 4, "Name": "Clint Lewis", "Email": "clint@kcbi.org"})
+    assert rep["id"] == "123"
+    assert rep["user_id"] == "123"
+    assert rep["sales_rep_id"] == "4"
+
+
+def test_expand_owner_lookup_aliases_contract_sales_rep_id():
+    lookup = expand_owner_lookup(
+        [{"aquira_user_id": "123", "aquira_name": "Clint Lewis", "hubspot_owner_id": "hs-clint", "enabled": True}],
+        [{"id": "123", "user_id": "123", "sales_rep_id": "4", "name": "Clint Lewis"}],
+    )
+    assert lookup["123"] == "hs-clint"
+    assert lookup["4"] == "hs-clint"
+

@@ -869,8 +869,10 @@ def merge_contract(summary: dict[str, Any] | None, loaded: dict[str, Any] | None
 
 def normalize_rep(payload: Any) -> dict[str, Any] | None:
     entity = entity_of(payload)
-    ident = entity.get("ID", entity.get("Id", entity.get("UserID", entity.get("UserId"))))
-    if ident is None or ident == "":
+    user_id = _ref_id(entity.get("ID") or entity.get("Id") or entity.get("UserID") or entity.get("UserId"))
+    sales_rep_id = _ref_id(entity.get("SalesRepID") or entity.get("SalesRep"))
+    ident = user_id or sales_rep_id
+    if ident is None:
         return None
     first = as_str(entity.get("FirstName"))
     last = as_str(entity.get("LastName"))
@@ -880,6 +882,8 @@ def normalize_rep(payload: Any) -> dict[str, Any] | None:
     return {
         "id": str(ident),
         "ID": ident,
+        "user_id": str(user_id or ident),
+        "sales_rep_id": str(sales_rep_id or ident),
         "name": name or f"User {ident}",
         "Name": name or f"User {ident}",
         "email": email,

@@ -214,30 +214,19 @@ class SyncOrchestrator:
                 items.extend(plan_new_aquira_clients(existing.get("unsynced") or []))
         return items
 
-    def _owner_map(self, repo: Any) -> dict[str, str]:
-        mapping: dict[str, str] = {}
+    def _owner_map(self, repo: Any, reps: list[dict[str, Any]] | None = None) -> dict[str, str]:
+        from app.mapping.owners import expand_owner_lookup
+
         lister = getattr(repo, "list_owner_maps", None)
         if not callable(lister):
-            return mapping
+            return expand_owner_lookup([], reps)
         try:
             rows = lister()
         except Exception:
-            return mapping
+            return expand_owner_lookup([], reps)
         if not isinstance(rows, (list, tuple)):
-            return mapping
-        for row in rows:
-            enabled = getattr(row, "enabled", None)
-            if enabled is None and isinstance(row, dict):
-                enabled = row.get("enabled")
-            owner_id = getattr(row, "hubspot_owner_id", None)
-            if owner_id is None and isinstance(row, dict):
-                owner_id = row.get("hubspot_owner_id")
-            aquira_id = getattr(row, "aquira_user_id", None)
-            if aquira_id is None and isinstance(row, dict):
-                aquira_id = row.get("aquira_user_id")
-            if enabled and owner_id and aquira_id:
-                mapping[str(aquira_id)] = str(owner_id)
-        return mapping
+            return expand_owner_lookup([], reps)
+        return expand_owner_lookup(list(rows), reps)
 
     def _owner_by_name(self, repo: Any) -> dict[str, str]:
         from app.mapping.owners import _normalize_name
@@ -537,12 +526,13 @@ class SyncOrchestrator:
                     owner_team_by_owner_id = live_hubspot.owner_primary_team_map() or {}
                 except Exception:
                     owner_team_by_owner_id = {}
+            owner_lookup = self._owner_map(repo, catalog.get("reps") or [])
             apply_team_ids(
                 catalog,
                 self._team_map(repo),
                 teams_by_name=teams_by_name,
                 attribute_names=team_attribute_names(settings.aquira_team_attribute),
-                owner_by_aquira=self._owner_map(repo),
+                owner_by_aquira=owner_lookup,
                 owner_team_by_owner_id=owner_team_by_owner_id,
                 team_owner_by_team_id=self._team_owner_map(repo),
                 owner_by_name=self._owner_by_name(repo),
@@ -552,7 +542,7 @@ class SyncOrchestrator:
                 catalog,
                 existing,
                 entities,
-                self._owner_map(repo),
+                owner_lookup,
                 create_missing_clients=bool(settings.sync_create_aquira_client),
             )
             for item in items:

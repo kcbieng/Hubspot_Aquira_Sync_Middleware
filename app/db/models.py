@@ -68,6 +68,7 @@ class OwnerMap(Base):
     aquira_user_id: Mapped[str] = mapped_column(String(100), primary_key=True)
     aquira_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     aquira_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    aquira_sales_rep_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     hubspot_owner_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     hubspot_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     hubspot_email: Mapped[str | None] = mapped_column(String(255), nullable=True)

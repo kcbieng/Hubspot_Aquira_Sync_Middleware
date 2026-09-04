@@ -34,7 +34,7 @@
                 <td>
                   <input type="hidden" name="aquira_user_id" value="{{ row.aquira_user_id }}">
                   <strong>{{ row.aquira_name or row.aquira_user_id }}</strong>
-                  <div class="small text-muted">{{ row.aquira_email }}</div>
+                  <div class="small text-muted">{{ row.aquira_email }}{% if row.aquira_sales_rep_id and row.aquira_sales_rep_id != row.aquira_user_id %} · sales-rep id {{ row.aquira_sales_rep_id }}{% endif %}</div>
                   {% if row.suggested %}<span class="badge text-bg-light">suggested</span>{% endif %}
                 </td>
                 <td>

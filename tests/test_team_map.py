@@ -177,6 +177,38 @@ def test_company_inherits_owner_from_contract_sales_rep():
     assert company_properties(catalog["clients"][0])["hubspot_owner_id"] == "hs-clint"
 
 
+def test_deal_owner_uses_sales_rep_id_not_user_id():
+    catalog = {
+        "clients": [{"ID": 44, "Name": "A New Beginning", "Attributes": {}}],
+        "contacts": [],
+        "contracts": [
+            {
+                "ID": 1,
+                "AccountID": 44,
+                "AdvertiserID": 44,
+                "SalesRepID": 4,
+                "SalesRepName": "Clint Lewis",
+                "Attributes": {},
+            }
+        ],
+        "reps": [{"id": "123", "user_id": "123", "sales_rep_id": "4", "name": "Clint Lewis"}],
+    }
+    from app.mapping.owners import expand_owner_lookup
+
+    lookup = expand_owner_lookup(
+        [{"aquira_user_id": "123", "aquira_name": "Clint Lewis", "hubspot_owner_id": "hs-clint", "enabled": True}],
+        catalog["reps"],
+    )
+    apply_team_ids(catalog, {}, owner_by_aquira=lookup)
+    assert catalog["contracts"][0]["hubspot_owner_id"] == "hs-clint"
+    from app.sync.planner import deal_properties, plan_deals
+
+    assert deal_properties(catalog["contracts"][0])["hubspot_owner_id"] == "hs-clint"
+    items = plan_deals(catalog["contracts"], {}, lookup)
+    assert items[0]["properties"]["hubspot_owner_id"] == "hs-clint"
+
+
+
 def test_company_owner_matches_sales_rep_name():
     catalog = {
         "clients": [{"ID": 44, "Name": "A New Beginning", "SalesRepName": "Clint Lewis", "Attributes": {}}],

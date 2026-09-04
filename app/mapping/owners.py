@@ -105,7 +105,8 @@ def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[di
 
         suggestions.append(
             {
-                "aquira_user_id": rep.get("id") or rep.get("ID"),
+                "aquira_user_id": rep.get("id") or rep.get("user_id") or rep.get("ID"),
+                "aquira_sales_rep_id": rep.get("sales_rep_id") or rep.get("id") or rep.get("ID"),
                 "aquira_name": rep.get("name"),
                 "aquira_email": rep.get("email"),
                 "hubspot_owner_id": (chosen or {}).get("owner_id") if chosen else None,
@@ -118,3 +119,44 @@ def suggest_owner_map(aquira_reps: list[dict[str, Any]], hubspot_owners: list[di
             }
         )
     return suggestions
+
+
+def expand_owner_lookup(maps: list[Any], reps: list[dict[str, Any]] | None = None) -> dict[str, str]:
+    """Index HubSpot owners by Aquira user id, sales-rep id, and name.
+
+    User/Lookup uses User.ID; contracts use SalesRepID. Both must hit the same mapping.
+    """
+    lookup: dict[str, str] = {}
+    name_to_owner: dict[str, str] = {}
+    for row in maps or []:
+        enabled = getattr(row, "enabled", None)
+        if enabled is None and isinstance(row, dict):
+            enabled = row.get("enabled")
+        owner_id = getattr(row, "hubspot_owner_id", None) if not isinstance(row, dict) else row.get("hubspot_owner_id")
+        user_id = getattr(row, "aquira_user_id", None) if not isinstance(row, dict) else row.get("aquira_user_id")
+        sales_rep_id = getattr(row, "aquira_sales_rep_id", None) if not isinstance(row, dict) else row.get("aquira_sales_rep_id")
+        name = getattr(row, "aquira_name", None) if not isinstance(row, dict) else row.get("aquira_name")
+        if not enabled or not owner_id:
+            continue
+        owner = str(owner_id)
+        for key in (user_id, sales_rep_id):
+            if key not in (None, ""):
+                lookup[str(key)] = owner
+        if name:
+            name_to_owner[_normalize_name(name)] = owner
+    for rep in reps or []:
+        owner = (
+            lookup.get(str(rep.get("id") or ""))
+            or lookup.get(str(rep.get("user_id") or ""))
+            or lookup.get(str(rep.get("sales_rep_id") or ""))
+            or name_to_owner.get(_normalize_name(rep.get("name") or rep.get("Name")))
+        )
+        if not owner:
+            continue
+        for key in (rep.get("id"), rep.get("user_id"), rep.get("sales_rep_id"), rep.get("ID"), rep.get("SalesRepID")):
+            if key not in (None, ""):
+                lookup[str(key)] = owner
+        name = _normalize_name(rep.get("name") or rep.get("Name"))
+        if name:
+            name_to_owner[name] = owner
+    return lookup

@@ -245,6 +245,8 @@ def aquira_owners() -> list[dict[str, object]]:
     return [
         {
             "id": rep.get("id") or rep.get("ID"),
+            "user_id": rep.get("user_id") or rep.get("id"),
+            "sales_rep_id": rep.get("sales_rep_id") or rep.get("id"),
             "name": rep.get("name") or rep.get("Name"),
             "email": rep.get("email") or rep.get("Email"),
         }
@@ -294,6 +296,7 @@ def owner_map() -> list[dict[str, object]]:
             if existing is not None and not existing.suggested:
                 existing.aquira_name = suggestion.get("aquira_name") or existing.aquira_name
                 existing.aquira_email = suggestion.get("aquira_email") or existing.aquira_email
+                existing.aquira_sales_rep_id = suggestion.get("aquira_sales_rep_id") or existing.aquira_sales_rep_id
                 repo.session.add(existing)
                 continue
             repo.session.merge(
@@ -301,6 +304,7 @@ def owner_map() -> list[dict[str, object]]:
                     aquira_user_id=aquira_id,
                     aquira_name=suggestion.get("aquira_name"),
                     aquira_email=suggestion.get("aquira_email"),
+                    aquira_sales_rep_id=suggestion.get("aquira_sales_rep_id"),
                     hubspot_owner_id=suggestion.get("hubspot_owner_id"),
                     hubspot_name=suggestion.get("hubspot_name"),
                     hubspot_email=suggestion.get("hubspot_email"),
