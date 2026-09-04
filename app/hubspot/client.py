@@ -242,6 +242,20 @@ class HubSpotClient:
                         teams[ident] = {"id": ident, "name": str(team.get("name") or ident), "user_ids": []}
         return sorted(teams.values(), key=lambda row: str(row.get("name") or "").lower())
 
+    def owner_primary_team_map(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        if not self.access_token:
+            return mapping
+        for owner in self.get_owners().get("results") or []:
+            ident = str(owner.get("id") or owner.get("ownerId") or "")
+            teams = owner.get("teams") or []
+            primary = next((team for team in teams if team.get("primary") is True), None)
+            if primary is None and len(teams) == 1:
+                primary = teams[0]
+            if ident and primary and primary.get("id"):
+                mapping[ident] = str(primary.get("id"))
+        return mapping
+
     def list_sales_users(self) -> list[dict[str, Any]]:
         """CRM owners joined with portal users so Super Admins can be labeled.
 

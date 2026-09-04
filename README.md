@@ -11,7 +11,7 @@ The scheduler honors what-if mode. Live writes only happen when you turn what-if
 - Optionally creates an Aquira client for a HubSpot company that has no `aquira_id`
 - Allocates contract dollars across calendar months (spot-weighted when line data exists, even fallback otherwise)
 - Maps Aquira sales reps to HubSpot **users** (deal `hubspot_owner_id`). HubSpot's Owner picker is anyone who can own a record and is often just Super Admins — those are labeled and excluded from auto-suggest.
-- Maps Aquira teams onto HubSpot **teams** (`hubspot_team_id` on companies, contacts, and deals). Primary source is a custom Aquira attribute (default name `HubSpot Team`) whose value is the exact HubSpot team name. Unlabeled advertisers and unique station call letters can be mapped as fallbacks. Contacts inherit from their client, then from that client's contracts.
+- Maps Aquira teams onto HubSpot **teams** (`hubspot_team_id` on companies, contacts, and deals). Primary source is a custom Aquira attribute (default name `HubSpot Team`) whose value is the exact HubSpot team name. Fallbacks: Aquira sales team, product code, station, sales rep (including the HubSpot owner's primary team), then advertiser name. Contacts inherit from their client, then from that client's contracts.
 - Accepts HubSpot CRM webhooks and runs a targeted identity writeback
 - Records every plan item and field diff so operators can inspect a what-if before enabling writes
 

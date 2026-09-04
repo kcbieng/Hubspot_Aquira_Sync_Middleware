@@ -10,9 +10,11 @@
     <p class="text-muted">
       Create an Aquira custom attribute named <strong>{{ attribute_name }}</strong> whose value is the
       <em>exact</em> HubSpot team name. Set it on the client, advertiser, account, contract, or proposal.
-      Contacts inherit the team from their client, then from that client&rsquo;s contracts.
-      Suggest matches by exact name. Unmapped values can still be assigned here, including advertiser
-      names and station call letters used as fallbacks.
+      If that attribute is empty, the mapper infers a team from Aquira sales team, product code,
+      station, sales rep, or advertiser name — in that order. Sales reps also inherit the HubSpot team
+      of their mapped owner when that owner belongs to a single/primary team.
+      Contacts inherit from their client, then from that client&rsquo;s contracts.
+      Product codes and sales-rep names never auto-match a HubSpot team; map those rows below.
     </p>
 
     <form method="post" action="/ui/teams">

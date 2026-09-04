@@ -137,6 +137,23 @@ def _ref_name(value: Any) -> str:
     return as_str(inner)
 
 
+def _ref_names(value: Any) -> list[str]:
+    inner = unwrap(value)
+    items = inner if isinstance(inner, list) else [inner] if inner not in (None, "", []) else []
+    names: list[str] = []
+    for item in items:
+        rec = as_record(unwrap(item))
+        nested = rec.get("Value")
+        if isinstance(nested, dict) and rec.get("Name") in (None, ""):
+            rec = as_record(nested)
+        name = as_str(rec.get("Name") or rec.get("LongName") or rec.get("ShortName") or rec.get("DisplayName")).strip()
+        if not name:
+            name = _ref_name(item).strip()
+        if name:
+            names.append(name)
+    return list(dict.fromkeys(names))
+
+
 def _sales_rep_id(entity: dict[str, Any]) -> int | None:
     direct = _ref_id(entity.get("SalesRepID") or entity.get("SalesRep"))
     if direct:
@@ -151,6 +168,34 @@ def _sales_rep_id(entity: dict[str, Any]) -> int | None:
         if ident:
             return ident
     return None
+
+
+def _sales_rep_name(entity: dict[str, Any]) -> str:
+    direct = _entity_str(entity, "SalesRepName") or _ref_name(entity.get("SalesRep"))
+    if direct:
+        return direct
+    reps = unwrap(entity.get("SalesReps"))
+    if not isinstance(reps, list):
+        return ""
+    rows = [as_record(unwrap(row)) for row in reps]
+    selected = [row for row in rows if as_bool(row.get("Selected"))]
+    for row in selected or rows:
+        name = _ref_name(row.get("SalesRepID") or row.get("SalesRep") or row)
+        if name:
+            return name
+    return ""
+
+
+def _sales_teams(entity: dict[str, Any]) -> list[str]:
+    names = _ref_names(entity.get("SalesTeams") or entity.get("SalesTeam") or entity.get("SalesTeamItem"))
+    reps = unwrap(entity.get("SalesReps"))
+    if isinstance(reps, list):
+        rows = [as_record(unwrap(row)) for row in reps]
+        selected = [row for row in rows if as_bool(row.get("Selected"))]
+        for row in selected or rows:
+            names.extend(_ref_names(row.get("SalesTeam") or row.get("SalesTeamItem")))
+            names.extend(_ref_names(as_record(unwrap(row.get("SalesRepID"))).get("SalesTeam")))
+    return list(dict.fromkeys(name for name in names if name))
 
 
 def _status_int(value: Any) -> int | None:
@@ -347,7 +392,8 @@ def normalize_client(payload: Any) -> dict[str, Any] | None:
         "IsAdvertiser": is_advertiser,
         "AccountID": account_id,
         "SalesRepID": sales_rep_id,
-        "SalesRepName": _entity_str(entity, "SalesRepName") or _ref_name(entity.get("SalesRep")) or None,
+        "SalesRepName": _sales_rep_name(entity) or _entity_str(entity, "SalesRepName") or _ref_name(entity.get("SalesRep")) or None,
+        "SalesTeams": _sales_teams(entity),
         "Contacts": contacts,
         "Attributes": extract_attributes(entity),
     }
@@ -427,6 +473,7 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
                 "start": start,
                 "end": end,
                 "amount": amount,
+                "products": _ref_names(item.get("Products") or item.get("Product")),
                 "spots_by_month": {key: float(as_num(val)) for key, val in spots.items()} or None,
                 "seconds_by_month": {key: float(as_num(val)) for key, val in seconds.items()} or None,
             }
@@ -444,6 +491,7 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
                     "start": start,
                     "end": end,
                     "amount": amount,
+                    "products": [],
                     "spots_by_month": None,
                     "seconds_by_month": None,
                 }
@@ -517,6 +565,14 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
             )
         )
         stations = ", ".join(unique) or None
+    products = list(
+        dict.fromkeys(
+            [
+                *_ref_names(entity.get("Product") or entity.get("Products")),
+                *(name for line in lines for name in (line.get("products") or [])),
+            ]
+        )
+    )
     if cancelled:
         status_label = "Cancelled"
     elif is_contract:
@@ -542,8 +598,11 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         "AccountName": account_name or None,
         "AdvertiserName": advertiser_name or None,
         "SalesRepID": sales_rep_id,
+        "SalesRepName": _sales_rep_name(entity) or None,
+        "SalesTeams": _sales_teams(entity),
         "Status": status_label,
         "Stations": stations,
+        "ProductNames": products,
         "lines": lines,
         "Attributes": extract_attributes(entity),
     }
@@ -569,6 +628,9 @@ def merge_client(summary: dict[str, Any] | None, loaded: dict[str, Any] | None) 
         if key == "Contacts":
             if value:
                 merged[key] = value
+            continue
+        if key == "SalesTeams":
+            merged[key] = list(dict.fromkeys([*(merged.get("SalesTeams") or []), *(value or [])]))
             continue
         if key == "Attributes":
             merged[key] = {**(merged.get("Attributes") or {}), **(value or {})}
@@ -641,6 +703,10 @@ def merge_contract(summary: dict[str, Any] | None, loaded: dict[str, Any] | None
         if key == "Attributes":
             merged[key] = {**(merged.get("Attributes") or {}), **(value or {})}
             continue
+        if key in {"SalesTeams", "ProductNames"}:
+            if value:
+                merged[key] = value
+            continue
         if not _empty(value):
             merged[key] = value
     return merged
@@ -655,6 +721,7 @@ def normalize_rep(payload: Any) -> dict[str, Any] | None:
     last = as_str(entity.get("LastName"))
     name = as_str(entity.get("Name", entity.get("DisplayName"))) or f"{first} {last}".strip()
     email = as_str(entity.get("Email", entity.get("UserName", entity.get("Username")))).lower()
+    teams = _sales_teams(entity)
     return {
         "id": str(ident),
         "ID": ident,
@@ -662,4 +729,6 @@ def normalize_rep(payload: Any) -> dict[str, Any] | None:
         "Name": name or f"User {ident}",
         "email": email,
         "Email": email,
+        "SalesTeams": teams,
+        "sales_team": teams[0] if teams else None,
     }

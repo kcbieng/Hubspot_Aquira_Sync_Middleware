@@ -2,6 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
+QUALIFIED_SOURCES = {"salesrep", "product"}
+SOURCE_RANK = {
+    "attribute": 0,
+    "salesteam": 1,
+    "product": 2,
+    "salesrep": 3,
+    "station": 4,
+    "advertiser": 5,
+}
+
 
 def normalize_team_key(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().replace("-", " ").replace("_", " ").split())
@@ -18,6 +28,15 @@ def team_attribute_names(configured: str | None = None) -> list[str]:
             seen.add(key)
             ordered.append(text)
     return ordered or ["HubSpot Team"]
+
+
+def qualified_key(source: str, label: Any) -> str:
+    text = normalize_team_key(label)
+    if not text:
+        return ""
+    if source in QUALIFIED_SOURCES:
+        return f"{source}:{text}"
+    return text
 
 
 def team_label_from(entity: dict[str, Any] | None, attribute_names: list[str] | None = None) -> str:
@@ -42,15 +61,52 @@ def team_label_from(entity: dict[str, Any] | None, attribute_names: list[str] | 
     return ""
 
 
+def _rep_label(entity: dict[str, Any], reps_by_id: dict[str, dict[str, Any]]) -> str:
+    name = str(entity.get("SalesRepName") or "").strip()
+    ident = entity.get("SalesRepID")
+    if not name and ident is not None:
+        name = str((reps_by_id.get(str(ident)) or {}).get("name") or (reps_by_id.get(str(ident)) or {}).get("Name") or "").strip()
+    if name:
+        return name
+    if ident not in (None, ""):
+        return f"Sales rep {ident}"
+    return ""
+
+
+def _sales_teams_for(entity: dict[str, Any], reps_by_id: dict[str, dict[str, Any]]) -> list[str]:
+    names = [str(name).strip() for name in (entity.get("SalesTeams") or []) if str(name or "").strip()]
+    ident = entity.get("SalesRepID")
+    if ident is not None:
+        rep = reps_by_id.get(str(ident)) or {}
+        names.extend(str(name).strip() for name in (rep.get("SalesTeams") or []) if str(name or "").strip())
+        if rep.get("sales_team"):
+            names.append(str(rep.get("sales_team")).strip())
+    team = str(entity.get("SalesTeam") or "").strip()
+    if team:
+        names.append(team)
+    return list(dict.fromkeys(name for name in names if name))
+
+
+def _product_names(entity: dict[str, Any]) -> list[str]:
+    names = [str(name).strip() for name in (entity.get("ProductNames") or []) if str(name or "").strip()]
+    for line in entity.get("lines") or []:
+        names.extend(str(name).strip() for name in (line.get("products") or []) if str(name or "").strip())
+    product = str(entity.get("Product") or entity.get("ProductName") or "").strip()
+    if product:
+        names.append(product)
+    return list(dict.fromkeys(name for name in names if name))
+
+
 def collect_team_keys(catalog: dict[str, list[dict[str, Any]]], attribute_names: list[str] | None = None) -> list[dict[str, Any]]:
     names = attribute_names or team_attribute_names()
     keys: dict[str, dict[str, Any]] = {}
+    reps_by_id = {str(rep.get("id") or rep.get("ID")): rep for rep in (catalog.get("reps") or [])}
 
     def add(label: Any, source: str) -> None:
         text = str(label or "").strip()
         if not text:
             return
-        key = normalize_team_key(text)
+        key = qualified_key(source, text)
         if not key:
             return
         row = keys.get(key)
@@ -58,8 +114,8 @@ def collect_team_keys(catalog: dict[str, list[dict[str, Any]]], attribute_names:
             keys[key] = {"aquira_key": key, "aquira_label": text, "source": source, "count": 1}
             return
         row["count"] += 1
-        if source == "attribute":
-            row["source"] = "attribute"
+        if SOURCE_RANK.get(source, 9) < SOURCE_RANK.get(row["source"], 9):
+            row["source"] = source
             row["aquira_label"] = text
 
     for client in catalog.get("clients") or []:
@@ -68,26 +124,41 @@ def collect_team_keys(catalog: dict[str, list[dict[str, Any]]], attribute_names:
             add(label, "attribute")
         elif client.get("IsAdvertiser"):
             add(client.get("Name"), "advertiser")
+        add(_rep_label(client, reps_by_id), "salesrep")
+        for team in _sales_teams_for(client, reps_by_id):
+            add(team, "salesteam")
     for contract in catalog.get("contracts") or []:
         label = team_label_from(contract, names)
         if label:
             add(label, "attribute")
         for part in str(contract.get("Stations") or "").split(","):
             add(part.strip(), "station")
-    return sorted(keys.values(), key=lambda row: (row["source"], row["aquira_label"].lower()))
+        add(_rep_label(contract, reps_by_id), "salesrep")
+        for team in _sales_teams_for(contract, reps_by_id):
+            add(team, "salesteam")
+        for product in _product_names(contract):
+            add(product, "product")
+    for rep in catalog.get("reps") or []:
+        add(rep.get("name") or rep.get("Name"), "salesrep")
+        for team in _sales_teams_for(rep, {}):
+            add(team, "salesteam")
+    return sorted(keys.values(), key=lambda row: (SOURCE_RANK.get(row["source"], 9), row["aquira_label"].lower()))
 
 
 def suggest_team_map(aquira_keys: list[dict[str, Any]], hubspot_teams: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_name = {normalize_team_key(team.get("name")): team for team in hubspot_teams if team.get("name")}
     suggestions: list[dict[str, Any]] = []
     for row in aquira_keys:
-        key = normalize_team_key(row.get("aquira_key") or row.get("aquira_label"))
-        matched = by_name.get(key)
+        source = row.get("source") or "attribute"
+        key = qualified_key(source, row.get("aquira_label") or row.get("aquira_key")) or str(row.get("aquira_key") or "")
+        matched = None
+        if source not in QUALIFIED_SOURCES:
+            matched = by_name.get(normalize_team_key(row.get("aquira_label") or row.get("aquira_key")))
         suggestions.append(
             {
-                "aquira_key": key or row.get("aquira_key"),
+                "aquira_key": key,
                 "aquira_label": row.get("aquira_label") or row.get("aquira_key"),
-                "source": row.get("source") or "attribute",
+                "source": source,
                 "count": int(row.get("count") or 0),
                 "hubspot_team_id": str(matched.get("id") or "") if matched else None,
                 "hubspot_team_name": matched.get("name") if matched else None,
@@ -107,41 +178,92 @@ def resolve_team_id(label: str | None, mapping: dict[str, str], teams_by_name: d
     return (teams_by_name or {}).get(key)
 
 
+def resolve_mapped(
+    label: Any,
+    source: str,
+    mapping: dict[str, str],
+    teams_by_name: dict[str, str] | None = None,
+) -> str | None:
+    key = qualified_key(source, label)
+    if not key:
+        return None
+    if key in mapping:
+        return mapping[key]
+    if source in QUALIFIED_SOURCES:
+        return None
+    return resolve_team_id(label, mapping, teams_by_name if source in {"attribute", "salesteam"} else None)
+
+
+def unique_mapped(
+    labels: list[Any],
+    source: str,
+    mapping: dict[str, str],
+    teams_by_name: dict[str, str] | None = None,
+) -> tuple[str | None, str]:
+    found: dict[str, str] = {}
+    for label in labels:
+        text = str(label or "").strip()
+        team_id = resolve_mapped(text, source, mapping, teams_by_name)
+        if text and team_id:
+            found[team_id] = text
+    if len(found) == 1:
+        team_id, text = next(iter(found.items()))
+        return team_id, text
+    return None, ""
+
+
 def apply_team_ids(
     catalog: dict[str, list[dict[str, Any]]],
     mapping: dict[str, str],
     teams_by_name: dict[str, str] | None = None,
     attribute_names: list[str] | None = None,
+    owner_by_aquira: dict[str, str] | None = None,
+    owner_team_by_owner_id: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     names = attribute_names or team_attribute_names()
     clients = catalog.get("clients") or []
     contracts = catalog.get("contracts") or []
     contacts = catalog.get("contacts") or []
+    reps_by_id = {str(rep.get("id") or rep.get("ID")): rep for rep in (catalog.get("reps") or [])}
     clients_by_id = {str(client.get("ID")): client for client in clients}
+    owner_by_aquira = owner_by_aquira or {}
+    owner_team_by_owner_id = owner_team_by_owner_id or {}
+
+    def set_team(entity: dict[str, Any], team_id: str | None, label: str | None) -> str | None:
+        entity["HubSpotTeam"] = str(label or "").strip()
+        entity["hubspot_team_id"] = team_id
+        return team_id
 
     def assign_from_attribute(entity: dict[str, Any], label: str | None) -> str | None:
         text = str(label or "").strip()
-        entity["HubSpotTeam"] = text
-        entity["hubspot_team_id"] = resolve_team_id(text, mapping, teams_by_name)
-        return entity.get("hubspot_team_id")
-
-    def assign_from_map_only(entity: dict[str, Any], label: str | None) -> str | None:
-        text = str(label or "").strip()
-        team_id = resolve_team_id(text, mapping, None)
-        if team_id:
-            entity["HubSpotTeam"] = text
-            entity["hubspot_team_id"] = team_id
-            return team_id
-        entity.setdefault("HubSpotTeam", "")
-        entity.setdefault("hubspot_team_id", None)
-        return None
+        return set_team(entity, resolve_team_id(text, mapping, teams_by_name), text)
 
     def inherit(entity: dict[str, Any], parent: dict[str, Any] | None) -> str | None:
         if not parent or not parent.get("hubspot_team_id"):
             return None
-        entity["HubSpotTeam"] = parent.get("HubSpotTeam") or ""
-        entity["hubspot_team_id"] = parent.get("hubspot_team_id")
-        return entity.get("hubspot_team_id")
+        return set_team(entity, parent.get("hubspot_team_id"), parent.get("HubSpotTeam") or "")
+
+    def assign_unique(entity: dict[str, Any], labels: list[Any], source: str, allow_name_match: bool = False) -> str | None:
+        team_id, label = unique_mapped(labels, source, mapping, teams_by_name if allow_name_match else None)
+        if team_id:
+            return set_team(entity, team_id, label)
+        return None
+
+    def assign_from_sales_rep(entity: dict[str, Any]) -> str | None:
+        label = _rep_label(entity, reps_by_id)
+        ident = entity.get("SalesRepID")
+        team_id = resolve_mapped(label, "salesrep", mapping)
+        if not team_id and ident is not None:
+            team_id = resolve_mapped(f"Sales rep {ident}", "salesrep", mapping)
+        if team_id:
+            return set_team(entity, team_id, label)
+        owner_id = owner_by_aquira.get(str(ident or ""))
+        if owner_id:
+            auto = owner_team_by_owner_id.get(str(owner_id))
+            if auto:
+                teams = _sales_teams_for(entity, reps_by_id)
+                return set_team(entity, auto, label or (teams[0] if teams else ""))
+        return None
 
     def parent_first(client: dict[str, Any]) -> tuple[int, str]:
         ident = str(client.get("ID") or "")
@@ -157,7 +279,12 @@ def apply_team_ids(
         parent = clients_by_id.get(str(client.get("AccountID") or ""))
         if parent is not client and inherit(client, parent):
             continue
-        if assign_from_map_only(client, client.get("Name")):
+        if assign_unique(client, _sales_teams_for(client, reps_by_id), "salesteam", allow_name_match=True):
+            continue
+        advertiser_team = resolve_mapped(client.get("Name"), "advertiser", mapping)
+        if advertiser_team and set_team(client, advertiser_team, str(client.get("Name") or "")):
+            continue
+        if assign_from_sales_rep(client):
             continue
         assign_from_attribute(client, label)
 
@@ -167,22 +294,19 @@ def apply_team_ids(
             continue
         inherited = False
         for client_id in (contract.get("AdvertiserID"), contract.get("AccountID")):
-            parent = clients_by_id.get(str(client_id or ""))
-            if inherit(contract, parent):
+            if inherit(contract, clients_by_id.get(str(client_id or ""))):
                 inherited = True
                 break
         if inherited:
             continue
-        station_ids: dict[str, str] = {}
-        for part in str(contract.get("Stations") or "").split(","):
-            station = part.strip()
-            team_id = resolve_team_id(station, mapping, None)
-            if station and team_id:
-                station_ids[team_id] = station
-        if len(station_ids) == 1:
-            team_id, station = next(iter(station_ids.items()))
-            contract["HubSpotTeam"] = station
-            contract["hubspot_team_id"] = team_id
+        if assign_unique(contract, _sales_teams_for(contract, reps_by_id), "salesteam", allow_name_match=True):
+            continue
+        if assign_unique(contract, _product_names(contract), "product"):
+            continue
+        stations = [part.strip() for part in str(contract.get("Stations") or "").split(",") if part.strip()]
+        if assign_unique(contract, stations, "station"):
+            continue
+        if assign_from_sales_rep(contract):
             continue
         assign_from_attribute(contract, label)
 
@@ -197,13 +321,14 @@ def apply_team_ids(
         related = [
             contract
             for contract in contracts
-            if client_id and client_id in {str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")} and contract.get("hubspot_team_id")
+            if client_id
+            and client_id in {str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")}
+            and contract.get("hubspot_team_id")
         ]
         team_ids = {str(contract.get("hubspot_team_id")) for contract in related}
         if len(team_ids) == 1:
             chosen = related[0]
-            contact["HubSpotTeam"] = chosen.get("HubSpotTeam") or ""
-            contact["hubspot_team_id"] = chosen.get("hubspot_team_id")
+            set_team(contact, chosen.get("hubspot_team_id"), chosen.get("HubSpotTeam") or "")
             continue
         assign_from_attribute(contact, label)
     return catalog

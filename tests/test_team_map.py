@@ -140,6 +140,113 @@ def test_collect_team_keys_includes_attribute_and_advertiser():
     assert labels["KLTY"] == "station"
 
 
+def test_product_code_maps_contract_when_unique():
+    catalog = {
+        "clients": [],
+        "contacts": [],
+        "contracts": [
+            {
+                "ID": 1,
+                "Stations": "",
+                "Attributes": {},
+                "ProductNames": ["KCBI-AM"],
+                "lines": [{"products": ["KCBI-AM"]}],
+            }
+        ],
+    }
+    apply_team_ids(catalog, {"product:kcbi am": "t-product"})
+    assert catalog["contracts"][0]["hubspot_team_id"] == "t-product"
+
+
+def test_conflicting_product_codes_do_not_assign():
+    catalog = {
+        "clients": [],
+        "contacts": [],
+        "contracts": [{"ID": 1, "Attributes": {}, "ProductNames": ["KCBI-AM", "KLTY-FM"]}],
+    }
+    apply_team_ids(catalog, {"product:kcbi am": "t-1", "product:klty fm": "t-2"})
+    assert catalog["contracts"][0]["hubspot_team_id"] is None
+
+
+def test_sales_rep_map_assigns_team():
+    catalog = {
+        "clients": [{"ID": 2, "Name": "Adv", "IsAdvertiser": True, "SalesRepID": 7, "SalesRepName": "Jane Doe", "Attributes": {}}],
+        "contacts": [{"ID": 9, "ClientID": 2, "FirstName": "Pat", "LastName": "Seller", "Attributes": {}}],
+        "contracts": [{"ID": 1, "AdvertiserID": 2, "AccountID": 2, "SalesRepID": 7, "SalesRepName": "Jane Doe", "Attributes": {}}],
+    }
+    apply_team_ids(catalog, {"salesrep:jane doe": "t-rep"})
+    assert catalog["clients"][0]["hubspot_team_id"] == "t-rep"
+    assert catalog["contacts"][0]["hubspot_team_id"] == "t-rep"
+    assert catalog["contracts"][0]["hubspot_team_id"] == "t-rep"
+
+
+def test_sales_rep_uses_mapped_owner_primary_team():
+    catalog = {
+        "clients": [],
+        "contacts": [],
+        "contracts": [{"ID": 1, "SalesRepID": 7, "SalesRepName": "Jane Doe", "Attributes": {}}],
+    }
+    apply_team_ids(catalog, {}, owner_by_aquira={"7": "hs-jane"}, owner_team_by_owner_id={"hs-jane": "t-owner"})
+    assert catalog["contracts"][0]["hubspot_team_id"] == "t-owner"
+
+
+def test_aquira_sales_team_matches_hubspot_team_name():
+    catalog = {
+        "clients": [{"ID": 2, "Name": "Adv", "IsAdvertiser": True, "SalesTeams": ["KCBI Sales"], "Attributes": {}}],
+        "contacts": [{"ID": 9, "ClientID": 2, "FirstName": "Pat", "LastName": "Seller", "Attributes": {}}],
+        "contracts": [],
+    }
+    apply_team_ids(catalog, {}, teams_by_name={"kcbi sales": "t-1"})
+    assert catalog["clients"][0]["hubspot_team_id"] == "t-1"
+    assert catalog["contacts"][0]["hubspot_team_id"] == "t-1"
+
+
+def test_collect_includes_product_and_salesrep_keys():
+    keys = collect_team_keys(
+        {
+            "clients": [{"ID": 1, "Name": "Adv", "IsAdvertiser": True, "SalesRepName": "Jane Doe", "Attributes": {}}],
+            "contracts": [{"ID": 2, "ProductNames": ["KCBI-AM"], "SalesTeams": ["KCBI Sales"], "Attributes": {}}],
+            "reps": [{"id": "7", "name": "Jane Doe", "SalesTeams": ["KCBI Sales"]}],
+        }
+    )
+    by_source = {(row["source"], row["aquira_label"]) for row in keys}
+    assert ("product", "KCBI-AM") in by_source
+    assert ("salesrep", "Jane Doe") in by_source
+    assert ("salesteam", "KCBI Sales") in by_source
+
+
+def test_normalize_contract_keeps_product_and_sales_team():
+    from app.aquira.normalize import normalize_contract
+
+    contract = normalize_contract(
+        {
+            "ID": 85,
+            "ContractCD": "1115",
+            "Product": {"Name": "KCBI-AM", "ID": 3},
+            "SalesReps": [
+                {
+                    "Selected": True,
+                    "SalesRepID": {"ID": 7, "Name": "Jane Doe", "SalesTeam": {"Name": "KCBI Sales", "ID": 1}},
+                    "SalesTeam": {"Name": "KCBI Sales", "ID": 1},
+                }
+            ],
+            "SpotLines": [
+                {
+                    "StartDate": "2026-01-01",
+                    "EndDate": "2026-03-31",
+                    "NetAmount": 100,
+                    "Products": [{"Name": "KCBI-AM"}],
+                    "SelectedStationsCombined": [{"Name": "KCBI"}],
+                }
+            ],
+        }
+    )
+    assert "KCBI-AM" in contract["ProductNames"]
+    assert contract["SalesRepName"] == "Jane Doe"
+    assert "KCBI Sales" in contract["SalesTeams"]
+    assert contract["lines"][0]["products"] == ["KCBI-AM"]
+
+
 def test_normalize_client_keeps_team_attribute():
     client = normalize_client(
         {

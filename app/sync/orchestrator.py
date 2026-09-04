@@ -461,22 +461,30 @@ class SyncOrchestrator:
             from app.mapping.teams import apply_team_ids, team_attribute_names
 
             teams_by_name: dict[str, str] = {}
+            owner_team_by_owner_id: dict[str, str] = {}
             if live_hubspot is not None and hasattr(live_hubspot, "list_teams"):
                 try:
+                    from app.mapping.teams import normalize_team_key
+
                     for team in live_hubspot.list_teams() or []:
                         name = str(team.get("name") or "").strip()
                         ident = str(team.get("id") or "")
                         if name and ident:
-                            from app.mapping.teams import normalize_team_key
-
                             teams_by_name[normalize_team_key(name)] = ident
                 except Exception:
                     teams_by_name = {}
+            if live_hubspot is not None and hasattr(live_hubspot, "owner_primary_team_map"):
+                try:
+                    owner_team_by_owner_id = live_hubspot.owner_primary_team_map() or {}
+                except Exception:
+                    owner_team_by_owner_id = {}
             apply_team_ids(
                 catalog,
                 self._team_map(repo),
                 teams_by_name=teams_by_name,
                 attribute_names=team_attribute_names(settings.aquira_team_attribute),
+                owner_by_aquira=self._owner_map(repo),
+                owner_team_by_owner_id=owner_team_by_owner_id,
             )
 
             items = self.build_plan(
