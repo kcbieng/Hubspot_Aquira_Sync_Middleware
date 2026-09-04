@@ -98,13 +98,19 @@ python -m pip install -r requirements.txt
 
 ### 4) Configure runtime settings
 
-Copy the sample environment file:
+For local development, copy the sample environment file:
 
 ```bash
 copy .env.example .env
 ```
 
-Then edit `.env` with your values:
+For Portainer or other stack-managed deployments, copy the stack template instead:
+
+```bash
+copy stack.env.example stack.env
+```
+
+Then edit the appropriate file with your values:
 
 ```env
 AQUIRA_BASE_URL=https://aquira2go.kcbieng.org/Aquira_WebAPI
@@ -145,13 +151,15 @@ The service will be available at:
 
 ## Docker quick start
 
-Build and run with docker-compose:
+Build and run with Docker Compose:
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
-The container exposes the middleware on port `8080` and reads configuration from the `.env` file.
+For Portainer stacks, the app service expects a generated `stack.env` file with the same variable names as [.env.example](.env.example) and [stack.env.example](stack.env.example).
+
+The container exposes the middleware on port `8080` and reads configuration from the environment file provided by the deployment platform.
 
 ## Environment configuration
 

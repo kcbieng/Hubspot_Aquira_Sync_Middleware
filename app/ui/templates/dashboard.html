@@ -1,13 +1,83 @@
 {% extends "base.html" %}
 {% block content %}
-  <h2>Dashboard</h2>
-  <p><strong>Mode:</strong> {{ mode_label }}</p>
-  <p><strong>Environment:</strong> {{ settings.environment }}</p>
-  <p><strong>Timezone:</strong> {{ settings.timezone }}</p>
-  <p><strong>Status:</strong> {{ status }}</p>
-  <ul>
-    <li>Aquira: {{ settings.aquira_base_url }}</li>
-    <li>HubSpot token: {{ 'configured' if settings.hubspot_access_token else 'missing' }}</li>
-    <li>What-if: {{ settings.whatif }}</li>
-  </ul>
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0">Dashboard</h2>
+      <span class="status-pill {{ 'ok' if settings.whatif else 'warn' }}">{{ mode_label }}</span>
+    </div>
+
+    <div class="row g-3 mb-3">
+      <div class="col-md-4">
+        <div class="bg-light rounded p-3 h-100">
+          <div class="text-muted small text-uppercase">Environment</div>
+          <div class="fw-semibold fs-5">{{ settings.environment }}</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="bg-light rounded p-3 h-100">
+          <div class="text-muted small text-uppercase">Timezone</div>
+          <div class="fw-semibold fs-5">{{ settings.timezone }}</div>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <div class="bg-light rounded p-3 h-100">
+          <div class="text-muted small text-uppercase">Status</div>
+          <div class="fw-semibold fs-5">{{ status }}</div>
+        </div>
+      </div>
+    </div>
+
+    <ul class="list-group list-group-flush mb-4">
+      <li class="list-group-item"><strong>Aquira:</strong> {{ settings.aquira_base_url }}</li>
+      <li class="list-group-item"><strong>HubSpot token:</strong> {{ 'configured' if settings.hubspot_access_token else 'missing' }}</li>
+      <li class="list-group-item"><strong>What-if:</strong> {{ settings.whatif }}</li>
+    </ul>
+  </div>
+
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <h3 class="mb-3">Runtime settings</h3>
+    <form method="post" action="/ui/settings" class="row g-3 align-items-end">
+      <div class="col-md-6">
+        <div class="form-check form-switch mt-2">
+          <input class="form-check-input" type="checkbox" id="whatif" name="whatif" {% if settings.whatif %}checked{% endif %}>
+          <label class="form-check-label" for="whatif">What-if mode</label>
+        </div>
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="sync_interval_minutes">Sync interval (minutes)</label>
+        <input class="form-control" id="sync_interval_minutes" type="number" name="sync_interval_minutes" min="1" max="1440" value="{{ settings.sync_interval_minutes }}" />
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-primary w-100">Save</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <h3 class="mb-3">Operations</h3>
+    <form method="post" action="/ui/sync/run">
+      <button type="submit" class="btn btn-success">Run sync</button>
+    </form>
+  </div>
+
+  <div class="panel-card p-4 p-md-5">
+    <h3 class="mb-3">Last sync output</h3>
+    {% set sync_items = recent_sync_output['items'] %}
+    {% if sync_items %}
+      <div class="vstack gap-3">
+        {% for item in sync_items %}
+          <div class="border rounded p-3 bg-light-subtle">
+            <div class="fw-semibold">
+              {{ item.entity_type }} — {{ item.action }} ({{ item.mode }})
+            </div>
+            {% if item.payload %}
+              <pre>{{ item.payload | tojson(indent=2) }}</pre>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-muted mb-0">No sync output yet. Run the sync to generate a what-if or live plan.</p>
+    {% endif %}
+  </div>
 {% endblock %}

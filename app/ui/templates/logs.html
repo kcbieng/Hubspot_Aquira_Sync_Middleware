@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <h2 class="mb-3">Event log</h2>
+    {% if events %}
+      <div class="vstack gap-3">
+        {% for event in events %}
+          <div class="border rounded p-3 bg-light-subtle">
+            <div class="d-flex justify-content-between gap-3">
+              <strong>{{ event.level }}</strong>
+              <span class="small text-muted">{{ event.ts }}</span>
+            </div>
+            <div class="mt-2">{{ event.message }}</div>
+            {% if event.payload_json %}
+              <pre>{{ event.payload_json }}</pre>
+            {% endif %}
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-muted mb-0">No events logged yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

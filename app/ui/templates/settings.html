@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <h2 class="mb-3">Connections & Settings</h2>
+    <form method="post" action="/ui/settings" class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label" for="aquira_base_url">Aquira base URL</label>
+        <input class="form-control" id="aquira_base_url" name="aquira_base_url" value="{{ settings.aquira_base_url }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="sync_interval_minutes">Sync interval minutes</label>
+        <input class="form-control" id="sync_interval_minutes" name="sync_interval_minutes" type="number" value="{{ settings.sync_interval_minutes }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="ui_username">UI username</label>
+        <input class="form-control" id="ui_username" name="ui_username" value="{{ settings.ui_username }}">
+      </div>
+      <div class="col-md-6">
+        <label class="form-label" for="ui_password">UI password</label>
+        <input class="form-control" id="ui_password" name="ui_password" type="password" value="{{ settings.ui_password }}">
+      </div>
+      <div class="col-md-12">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="whatif" name="whatif" {% if settings.whatif %}checked{% endif %}>
+          <label class="form-check-label" for="whatif">PLAN ONLY — no writes</label>
+        </div>
+      </div>
+      <div class="col-12 d-flex gap-2">
+        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='/api/settings/test/aquira'">Test Aquira</button>
+        <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='/api/settings/test/hubspot'">Test HubSpot</button>
+      </div>
+    </form>
+  </div>
+{% endblock %}

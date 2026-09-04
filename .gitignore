@@ -2,6 +2,8 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+stack.env
+logs/
 *.pyc
 .mypy_cache/
 .coverage

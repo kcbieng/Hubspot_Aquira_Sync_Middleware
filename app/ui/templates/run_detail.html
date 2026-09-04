@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    {% if run %}
+      <h2 class="mb-3">Run #{{ run.id }}</h2>
+      <div class="mb-3">
+        <span class="badge text-bg-light me-2">{{ 'what-if' if run.whatif else 'live' }}</span>
+        <span class="badge text-bg-secondary">{{ run.status }}</span>
+      </div>
+      <p class="text-muted mb-3">Trigger: {{ run.trigger }} • Started: {{ run.started_at }} • Finished: {{ run.finished_at }}</p>
+      {% if items %}
+        <div class="vstack gap-3">
+          {% for item in items %}
+            <div class="border rounded p-3 bg-light-subtle">
+              <div class="fw-semibold">{{ item.entity_type }} — {{ item.action }}</div>
+              <div class="small text-muted">Aquira: {{ item.aquira_id }} • HubSpot: {{ item.hubspot_id }}</div>
+              {% if item.diff_json %}
+                <pre>{{ item.diff_json }}</pre>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-muted mb-0">No run items recorded.</p>
+      {% endif %}
+    {% else %}
+      <h2 class="mb-3">Run not found</h2>
+    {% endif %}
+  </div>
+{% endblock %}

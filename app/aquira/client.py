@@ -65,6 +65,16 @@ class AquiraSessionClient:
         entity = payload.get("Entity", {})
         return _unwrap_aquira_value(entity)
 
+    def load_sales_reps(self) -> list[dict[str, Any]]:
+        payload = self.request("POST", "/User/Lookup", json={"salesReps": True})
+        data = payload.get("Data", [])
+        rows: list[dict[str, Any]] = []
+        for row in data:
+            cleaned = _unwrap_aquira_value(row)
+            if cleaned:
+                rows.append(cleaned)
+        return rows
+
     def logout(self) -> None:
         try:
             self.client.delete("/Session/Delete")

@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <h2 class="mb-3">Runs</h2>
+    {% if runs %}
+      <div class="list-group">
+        {% for run in runs %}
+          <a class="list-group-item list-group-item-action" href="/ui/runs/{{ run.id }}">
+            <div class="d-flex justify-content-between align-items-center">
+              <strong>Run #{{ run.id }}</strong>
+              <span class="badge text-bg-light">{{ 'what-if' if run.whatif else 'live' }}</span>
+            </div>
+            <div class="small text-muted mt-1">{{ run.trigger }} • {{ run.status }} • {{ run.started_at }}</div>
+          </a>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="text-muted mb-0">No runs recorded yet.</p>
+    {% endif %}
+  </div>
+{% endblock %}

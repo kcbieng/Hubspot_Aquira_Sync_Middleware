@@ -25,12 +25,16 @@ class HubSpotClient:
         self.base_url = "https://api.hubapi.com"
 
     def headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"}
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.access_token:
+            headers["Authorization"] = f"Bearer {self.access_token}"
         if extra:
             headers.update(extra)
         return headers
 
     def get_owners(self) -> dict[str, Any]:
+        if not self.access_token:
+            return {"results": []}
         response = httpx.get(f"{self.base_url}/crm/v3/owners", headers=self.headers(), params={"limit": 1})
         response.raise_for_status()
         return response.json()

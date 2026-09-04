@@ -1,7 +1,12 @@
 from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import JSONResponse
 
+from app.db.models import OwnerMap
+from app.db.repo import Repo
+from app.hubspot.client import HubSpotClient
+from app.mapping.owners import suggest_owner_map
 from app.settings import get_settings
+from app.aquira.client import AquiraSessionClient
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -50,6 +55,26 @@ def get_settings_stub() -> dict[str, object]:
     }
 
 
+@router.post("/settings/test/aquira")
+def test_aquira_settings() -> dict[str, object]:
+    settings = get_settings()
+    return {
+        "status": "ok" if settings.aquira_base_url else "error",
+        "message": "Aquira config present" if settings.aquira_base_url else "Aquira base URL missing",
+        "aquira_base_url": settings.aquira_base_url,
+    }
+
+
+@router.post("/settings/test/hubspot")
+def test_hubspot_settings() -> dict[str, object]:
+    settings = get_settings()
+    return {
+        "status": "ok" if settings.hubspot_access_token else "error",
+        "message": "HubSpot token present" if settings.hubspot_access_token else "HubSpot token missing",
+        "portal": "configured" if settings.hubspot_access_token else "unconfigured",
+    }
+
+
 @router.put("/settings")
 def update_settings(payload: dict[str, object]) -> dict[str, object]:
     settings = get_settings()
@@ -65,8 +90,123 @@ def update_settings(payload: dict[str, object]) -> dict[str, object]:
 
 
 @router.get("/sync/status")
-def sync_status_stub() -> dict[str, str]:
-    return {"status": "ok", "message": "sync status endpoint ready", "whatif": str(get_settings().whatif).lower()}
+def sync_status_stub() -> dict[str, object]:
+    repo = Repo()
+    latest = repo.session.execute(
+        __import__("sqlalchemy").select(__import__("app.db.models", fromlist=["SyncRun"]).SyncRun).order_by(__import__("app.db.models", fromlist=["SyncRun"]).SyncRun.started_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    current_setting = get_settings().whatif
+    effective_whatif = latest.whatif if latest is not None else current_setting
+    return {
+        "status": latest.status if latest else "ok",
+        "message": "sync status ready",
+        "whatif": effective_whatif,
+        "last_started": latest.started_at.isoformat() if latest and latest.started_at else None,
+        "last_finished": latest.finished_at.isoformat() if latest and latest.finished_at else None,
+    }
+
+
+@router.post("/sync/run")
+def run_sync(payload: dict[str, object] | None = None) -> dict[str, object]:
+    repo = Repo()
+    settings = get_settings()
+    whatif = bool((payload or {}).get("whatif", settings.whatif))
+    settings.whatif = whatif
+    entities = payload.get("entities") if payload else None
+    if entities is None:
+        entities = ["companies", "contacts", "deals"]
+    run = repo.add_run("manual", whatif, status="running")
+    for entity in entities:
+        repo.add_run_item(run.id, str(entity), aquira_id=None, hubspot_id=None, action="planned", diff_json={"entity": entity, "whatif": whatif, "mode": "planned"})
+    run.status = "success"
+    run.finished_at = __import__("datetime").datetime.utcnow()
+    repo.session.commit()
+    return {
+        "status": "success",
+        "trigger": "manual",
+        "whatif": whatif,
+        "entities": list(entities),
+        "run_id": run.id,
+    }
+
+
+@router.get("/sync/runs")
+def sync_runs() -> list[dict[str, object]]:
+    repo = Repo()
+    runs = repo.session.execute(
+        __import__("sqlalchemy").select(__import__("app.db.models", fromlist=["SyncRun"]).SyncRun).order_by(__import__("app.db.models", fromlist=["SyncRun"]).SyncRun.started_at.desc()).limit(50)
+    ).scalars().all()
+    return [
+        {
+            "id": run.id,
+            "trigger": run.trigger,
+            "whatif": run.whatif,
+            "status": run.status,
+            "started_at": run.started_at.isoformat() if run.started_at else None,
+            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        }
+        for run in runs
+    ]
+
+
+@router.get("/sync/runs/{run_id}")
+def sync_run_detail(run_id: int) -> dict[str, object]:
+    repo = Repo()
+    run = repo.session.get(__import__("app.db.models", fromlist=["SyncRun"]).SyncRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    items = repo.session.execute(
+        __import__("sqlalchemy").select(__import__("app.db.models", fromlist=["SyncRunItem"]).SyncRunItem)
+        .where(__import__("app.db.models", fromlist=["SyncRunItem"]).SyncRunItem.run_id == run_id)
+        .order_by(__import__("app.db.models", fromlist=["SyncRunItem"]).SyncRunItem.id.desc())
+    ).scalars().all()
+    return {
+        "id": run.id,
+        "trigger": run.trigger,
+        "whatif": run.whatif,
+        "status": run.status,
+        "started_at": run.started_at.isoformat() if run.started_at else None,
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        "items": [
+            {
+                "id": item.id,
+                "entity_type": item.entity_type,
+                "aquira_id": item.aquira_id,
+                "hubspot_id": item.hubspot_id,
+                "action": item.action,
+                "diff_json": item.diff_json,
+                "error": item.error,
+            }
+            for item in items
+        ],
+    }
+
+
+@router.get("/owners/suggest")
+def owner_suggest() -> list[dict[str, object]]:
+    aquira_reps = aquira_owners()
+    hubspot_reps = hubspot_owners()
+    return suggest_owner_map(aquira_reps, hubspot_reps)
+
+
+@router.put("/owners/map")
+def update_owner_map(payload: list[dict[str, object]]) -> list[dict[str, object]]:
+    repo = Repo()
+    for suggestion in payload:
+        repo.session.merge(
+            OwnerMap(
+                aquira_user_id=str(suggestion.get("aquira_user_id")),
+                aquira_name=suggestion.get("aquira_name"),
+                aquira_email=suggestion.get("aquira_email"),
+                hubspot_owner_id=suggestion.get("hubspot_owner_id"),
+                hubspot_name=suggestion.get("hubspot_name"),
+                hubspot_email=suggestion.get("hubspot_email"),
+                enabled=bool(suggestion.get("enabled")),
+                suggested=bool(suggestion.get("suggested")),
+            )
+        )
+    repo.session.commit()
+    return payload
 
 
 @router.put("/settings/whatif")
@@ -78,15 +218,64 @@ def whatif_toggle(payload: dict[str, bool]) -> dict[str, bool]:
 
 
 @router.get("/owners/aquira")
-def aquira_owners() -> list[dict[str, str]]:
-    return []
+def aquira_owners() -> list[dict[str, object]]:
+    client = AquiraSessionClient()
+    try:
+        reps = client.load_sales_reps()
+    except Exception:
+        reps = []
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+    return [
+        {
+            "id": rep.get("id") or rep.get("ID"),
+            "name": rep.get("name") or rep.get("Name"),
+            "email": rep.get("email") or rep.get("Email"),
+        }
+        for rep in reps
+    ]
 
 
 @router.get("/owners/hubspot")
 def hubspot_owners() -> list[dict[str, str]]:
-    return []
+    client = HubSpotClient()
+    try:
+        payload = client.get_owners()
+    except Exception:
+        payload = {"results": []}
+    results = []
+    for owner in payload.get("results", []):
+        results.append(
+            {
+                "owner_id": str(owner.get("ownerId")),
+                "name": owner.get("firstName") + " " + owner.get("lastName") if owner.get("firstName") or owner.get("lastName") else owner.get("name"),
+                "email": owner.get("email"),
+            }
+        )
+    return results
 
 
 @router.get("/owners/map")
-def owner_map() -> list[dict[str, str]]:
-    return []
+def owner_map() -> list[dict[str, object]]:
+    aquira_reps = aquira_owners()
+    hubspot_reps = hubspot_owners()
+    suggestions = suggest_owner_map(aquira_reps, hubspot_reps)
+    repo = Repo()
+    for suggestion in suggestions:
+        repo.session.merge(
+            OwnerMap(
+                aquira_user_id=str(suggestion["aquira_user_id"]),
+                aquira_name=suggestion.get("aquira_name"),
+                aquira_email=suggestion.get("aquira_email"),
+                hubspot_owner_id=suggestion.get("hubspot_owner_id"),
+                hubspot_name=suggestion.get("hubspot_name"),
+                hubspot_email=suggestion.get("hubspot_email"),
+                enabled=bool(suggestion.get("enabled")),
+                suggested=bool(suggestion.get("suggested")),
+            )
+        )
+    repo.session.commit()
+    return suggestions
