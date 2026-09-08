@@ -162,6 +162,7 @@ class SyncOrchestrator:
         entities: list[str],
         owner_by_aquira: dict[str, str],
         create_missing_clients: bool = False,
+        aquira_id: str | None = None,
     ) -> list[dict[str, Any]]:
         wanted = self._wanted(entities)
         clients = catalog.get("clients") or []
@@ -181,7 +182,15 @@ class SyncOrchestrator:
         if "deals" in wanted:
             items.extend(plan_deals(contracts, deals_by_aquira, owner_by_aquira, client_name_by_id))
         if "revenue" in wanted:
-            items.extend(plan_revenue(contracts, revenue_by_aquira))
+            in_scope = {str(row.get("ID")) for row in contracts if row.get("ID") is not None}
+            items.extend(
+                plan_revenue(
+                    contracts,
+                    revenue_by_aquira,
+                    prune_stale=bool(in_scope),
+                    only_contract_ids=in_scope or None,
+                )
+            )
         if "writeback" in wanted:
             hs_companies = []
             for row in existing.get("companies") or []:
@@ -393,12 +402,16 @@ class SyncOrchestrator:
 
     def apply_item(self, item: dict[str, Any], aquira: Any | None, hubspot: Any | None, lookup: dict[tuple[str, str], str]) -> dict[str, Any]:
         if item.get("action") == "skip":
-            ident = item.get("hubspotId")
-            if ident:
-                lookup[(item["entityType"], str(item.get("aquiraId") or ""))] = str(ident)
+            ident = str(item.get("hubspotId") or lookup.get((item.get("entityType"), str(item.get("aquiraId") or ""))) or "").strip()
+            if not ident:
+                item["action"] = "create"
+                item["hubspotId"] = None
+            else:
+                item["hubspotId"] = ident
+                lookup[(item["entityType"], str(item.get("aquiraId") or ""))] = ident
                 if hubspot is not None:
                     self._apply_associations(item, hubspot, lookup)
-            return item
+                return item
 
         if item.get("writeback") and item.get("action") == "create" and item.get("entityType") == "client":
             if aquira is not None:
@@ -465,7 +478,7 @@ class SyncOrchestrator:
             deal_id = lookup.get(("deal", str(associations.get("dealId") or "")))
             if deal_id:
                 hubspot.associate(hs_type, hubspot_id, "deals", deal_id)
-            for company_id in associations.get("companyIds") or []:
+            for company_id in dict.fromkeys(str(value) for value in (associations.get("companyIds") or []) if str(value or "").strip()):
                 resolved = lookup.get(("company", str(company_id)))
                 if resolved:
                     hubspot.associate(hs_type, hubspot_id, "companies", resolved)
@@ -560,6 +573,7 @@ class SyncOrchestrator:
                 entities,
                 owner_lookup,
                 create_missing_clients=bool(settings.sync_create_aquira_client),
+                aquira_id=context.aquira_id,
             )
             for item in items:
                 warning = item.get("warning")
@@ -618,6 +632,7 @@ class SyncOrchestrator:
                             action=next_item.get("action") or "planned",
                             diff_json={
                                 "name": next_item.get("name"),
+                                "hubspotId": next_item.get("hubspotId"),
                                 "diffs": next_item.get("diffs") or [],
                                 "properties": next_item.get("properties") or {},
                                 "associations": next_item.get("associations"),

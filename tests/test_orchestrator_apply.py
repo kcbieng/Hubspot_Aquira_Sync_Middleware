@@ -165,3 +165,168 @@ def test_skip_still_associates_parent_company():
     pairs = {(row[1], row[3], row[4]) for row in hubspot.associations}
     assert ("hs-adv", "hs-agency", 14) in pairs
     assert ("hs-agency", "hs-adv", 13) in pairs
+
+
+def test_partial_sync_does_not_archive_other_contracts_revenue():
+    orchestrator = SyncOrchestrator()
+    catalog = {
+        "clients": [],
+        "contacts": [],
+        "contracts": [
+            {
+                "ID": 42,
+                "ContractCD": "1064",
+                "IsContract": True,
+                "Cancelled": False,
+                "TotalValue": 320,
+                "StartDate": "2026-10-01",
+                "EndDate": "2026-10-31",
+                "AccountID": 3,
+                "AdvertiserID": 3,
+                "lines": [],
+            }
+        ],
+        "reps": [],
+    }
+    existing = {
+        "companies": [],
+        "contacts": [],
+        "deals": [{"id": "hs-deal-42", "properties": {"aquira_id": "42", "dealname": "1064", "amount": 320, "pipeline": "default", "dealstage": "closedwon"}}],
+        "revenue": [
+            {
+                "id": "hs-rev-other",
+                "properties": {
+                    "aquira_id": "99:2026-10:0",
+                    "deal_aquira_id": "99",
+                    "period": "2026-10-01",
+                    "amount": 500,
+                    "spot_amount": 500,
+                    "charge_amount": 0,
+                    "source": "spot",
+                    "station": "KCBI",
+                    "station_id": 0,
+                    "kind": "booked",
+                    "contract_cd": "0999",
+                },
+            }
+        ],
+        "unsynced": [],
+    }
+    hubspot = FakeHubSpot()
+    hubspot.archives = []
+    hubspot.archive = lambda *args, **kwargs: hubspot.archives.append(args)
+    result = orchestrator.run(
+        SyncContext(trigger="webhook", whatif=False, entities=["deals"], aquira_id="42"),
+        aquira=FakeAquira(),
+        hubspot=hubspot,
+        catalog=catalog,
+        existing=existing,
+    )
+    assert result["counts"].get("delete-stale", 0) == 0
+    assert hubspot.archives == []
+
+
+def test_full_sync_does_not_archive_unloaded_contract_revenue():
+    orchestrator = SyncOrchestrator()
+    catalog = {
+        "clients": [],
+        "contacts": [],
+        "contracts": [
+            {
+                "ID": 42,
+                "ContractCD": "1064",
+                "IsContract": True,
+                "Cancelled": False,
+                "TotalValue": 320,
+                "StartDate": "2026-10-01",
+                "EndDate": "2026-10-31",
+                "AccountID": 3,
+                "AdvertiserID": 3,
+                "lines": [],
+            }
+        ],
+        "reps": [],
+    }
+    existing = {
+        "companies": [],
+        "contacts": [],
+        "deals": [],
+        "revenue": [
+            {
+                "id": "hs-rev-other",
+                "properties": {
+                    "aquira_id": "99:2026-10:0",
+                    "deal_aquira_id": "99",
+                    "period": "2026-10-01",
+                    "amount": 500,
+                    "kind": "booked",
+                    "contract_cd": "0999",
+                },
+            }
+        ],
+        "unsynced": [],
+    }
+    hubspot = FakeHubSpot()
+    hubspot.archives = []
+    hubspot.archive = lambda *args, **kwargs: hubspot.archives.append(args)
+    orchestrator.run(
+        SyncContext(trigger="poll", whatif=False, entities=["deals"]),
+        aquira=FakeAquira(),
+        hubspot=hubspot,
+        catalog=catalog,
+        existing=existing,
+    )
+    assert hubspot.archives == []
+
+
+def test_skip_revenue_reassociates_deal():
+    orchestrator = SyncOrchestrator()
+    hubspot = FakeHubSpot()
+    period_props = {
+        "aquira_id": "42:2026-10:0",
+        "period": "2026-10-01",
+        "amount": 320.0,
+        "spot_amount": 320.0,
+        "charge_amount": 0,
+        "source": "spot",
+        "station": "KZBI-FM",
+        "station_id": 0,
+        "kind": "booked",
+        "contract_cd": "1064",
+        "deal_aquira_id": "42",
+    }
+    catalog = {
+        "clients": [{"ID": 3, "Name": "Client", "IsAccount": True, "IsAdvertiser": True}],
+        "contacts": [],
+        "contracts": [
+            {
+                "ID": 42,
+                "ContractCD": "1064",
+                "IsContract": True,
+                "Cancelled": False,
+                "TotalValue": 320,
+                "StartDate": "2026-10-01",
+                "EndDate": "2026-10-31",
+                "AccountID": 3,
+                "AdvertiserID": 3,
+                "lines": [{"station_id": 0, "station": "KZBI-FM", "start": "2026-10-01", "end": "2026-10-31", "amount": 320, "line_kind": "spot"}],
+            }
+        ],
+        "reps": [],
+    }
+    existing = {
+        "companies": [{"id": "hs-co-3", "properties": {"aquira_id": "3", "name": "Client"}}],
+        "contacts": [],
+        "deals": [{"id": "hs-deal-42", "properties": {"aquira_id": "42", "dealname": "1064 — Client", "amount": 320, "pipeline": "default", "dealstage": "closedwon"}}],
+        "revenue": [{"id": "hs-rev-1", "properties": period_props}],
+        "unsynced": [],
+    }
+    orchestrator.run(
+        SyncContext(trigger="test", whatif=False, entities=["deals"]),
+        aquira=FakeAquira(),
+        hubspot=hubspot,
+        catalog=catalog,
+        existing=existing,
+    )
+    pairs = {(row[0], row[2], row[3]) for row in hubspot.associations}
+    assert ("revenue_period", "deals", "hs-deal-42") in pairs

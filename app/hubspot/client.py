@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -32,6 +34,31 @@ class HubSpotApiError(RuntimeError):
         super().__init__(message or f"HubSpot HTTP {status}")
         self.status = status
         self.body = body
+
+
+def _conflict_object_id(body: str | None) -> str | None:
+    if not body:
+        return None
+    payload: Any = None
+    try:
+        payload = json.loads(body)
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        context = payload.get("context") or {}
+        for key in ("id", "ids", "objectId"):
+            value = context.get(key)
+            if isinstance(value, list) and value:
+                return str(value[0])
+            if value not in (None, ""):
+                return str(value)
+        message = str(payload.get("message") or "")
+    else:
+        message = str(body)
+    match = re.search(r"(?:Existing ID|objectId|object id)\D+(\d{3,})", message, re.I)
+    if match:
+        return match.group(1)
+    return None
 
 
 COMPANY_PROPS = [
@@ -755,14 +782,19 @@ class HubSpotClient:
             return {"id": str(created.get("id")), "properties": created.get("properties") or payload["properties"]}
         except HubSpotApiError as err:
             if err.status == 409 and properties.get("aquira_id"):
-                found = self.search_all(
-                    object_type,
-                    list(properties.keys()),
-                    {"propertyName": "aquira_id", "operator": "EQ", "value": str(properties["aquira_id"])},
-                )
-                if found:
-                    updated = self._request("PATCH", f"/crm/v3/objects/{object_type}/{found[0]['id']}", json=payload)
-                    return {"id": str(updated.get("id") or found[0]["id"]), "properties": updated.get("properties") or payload["properties"]}
+                found_id = _conflict_object_id(err.body)
+                if not found_id:
+                    found = self.search_all(
+                        object_type,
+                        list(properties.keys()),
+                        {"propertyName": "aquira_id", "operator": "EQ", "value": str(properties["aquira_id"])},
+                    )
+                    if found:
+                        found_id = str(found[0]["id"])
+                if found_id:
+                    self.restore(object_type, found_id)
+                    updated = self._request("PATCH", f"/crm/v3/objects/{object_type}/{found_id}", json=payload)
+                    return {"id": str(updated.get("id") or found_id), "properties": updated.get("properties") or payload["properties"]}
             if err.status == 400 and "READ_ONLY_VALUE" in (err.body or ""):
                 trimmed = {key: value for key, value in properties.items() if key not in READ_ONLY_PROPERTIES}
                 for name in READ_ONLY_PROPERTIES:
@@ -786,12 +818,32 @@ class HubSpotClient:
                 return
             raise
 
+    def restore(self, object_type: str, ident: str) -> None:
+        try:
+            self._request("POST", f"/crm/v3/objects/{object_type}/{ident}/restore")
+        except HubSpotApiError as err:
+            if err.status in {404, 409}:
+                return
+            raise
+
     def associate(self, from_type: str, from_id: str, to_type: str, to_id: str, type_id: int | None = None) -> None:
         spec = self._association_spec(from_type, to_type, type_id)
         try:
             self._request("PUT", f"/crm/v4/objects/{from_type}/{from_id}/associations/{to_type}/{to_id}", json=[spec])
         except HubSpotApiError as err:
             if err.status in {400, 409}:
+                self._association_cache.pop(f"{from_type}->{to_type}", None)
+                retry = self._association_spec(from_type, to_type, type_id, force=True)
+                if retry != spec:
+                    try:
+                        self._request(
+                            "PUT",
+                            f"/crm/v4/objects/{from_type}/{from_id}/associations/{to_type}/{to_id}",
+                            json=[retry],
+                        )
+                        return
+                    except HubSpotApiError:
+                        pass
                 logger.warning(
                     "HubSpot association %s %s -> %s %s failed (HTTP %s): %s",
                     from_type,
@@ -804,31 +856,55 @@ class HubSpotClient:
                 return
             raise
 
-    def _association_spec(self, from_type: str, to_type: str, type_id: int | None = None) -> dict[str, Any]:
+    def _association_spec(
+        self,
+        from_type: str,
+        to_type: str,
+        type_id: int | None = None,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        native = {"contacts", "companies", "deals"}
         if type_id:
-            category = "HUBSPOT_DEFINED" if from_type in {"contacts", "companies", "deals"} and to_type in {"contacts", "companies", "deals"} else "USER_DEFINED"
+            category = "HUBSPOT_DEFINED" if from_type in native and to_type in native else "USER_DEFINED"
             return {"associationCategory": category, "associationTypeId": type_id}
         cache_key = f"{from_type}->{to_type}"
-        if cache_key in self._association_cache:
+        if not force and cache_key in self._association_cache:
             return self._association_cache[cache_key]
-        spec = {
-            "associationCategory": "HUBSPOT_DEFINED",
-            "associationTypeId": default_association_type(from_type, to_type),
-        }
-        if from_type not in {"contacts", "companies", "deals"} or to_type not in {"contacts", "companies", "deals"}:
-            try:
-                payload = self._request("GET", f"/crm/v4/associations/{from_type}/{to_type}/labels")
-                row = (payload.get("results") or [{}])[0]
+        if from_type in native and to_type in native:
+            spec = {
+                "associationCategory": "HUBSPOT_DEFINED",
+                "associationTypeId": default_association_type(from_type, to_type),
+            }
+            self._association_cache[cache_key] = spec
+            return spec
+        spec = self._custom_association_spec(from_type, to_type)
+        self._association_cache[cache_key] = spec
+        return spec
+
+    def _custom_association_spec(self, from_type: str, to_type: str) -> dict[str, Any]:
+        try:
+            payload = self._request("GET", f"/crm/v4/associations/{from_type}/{to_type}/labels")
+            for row in payload.get("results") or []:
                 ident = row.get("typeId") or row.get("id")
                 if ident:
-                    spec = {
+                    return {
                         "associationCategory": row.get("category") or "USER_DEFINED",
                         "associationTypeId": int(ident),
                     }
-            except Exception as exc:
-                logger.warning("Could not resolve HubSpot association %s: %s", cache_key, exc)
-        self._association_cache[cache_key] = spec
-        return spec
+        except Exception as exc:
+            logger.warning("Could not list HubSpot association labels %s -> %s: %s", from_type, to_type, exc)
+        try:
+            created = self._request(
+                "POST",
+                f"/crm/v4/associations/{from_type}/{to_type}/labels",
+                json={"label": None, "name": f"{from_type}_to_{to_type}"},
+            )
+            ident = created.get("typeId") or created.get("id") or ((created.get("results") or [{}])[0].get("typeId"))
+            if ident:
+                return {"associationCategory": created.get("category") or "USER_DEFINED", "associationTypeId": int(ident)}
+        except Exception as exc:
+            logger.warning("Could not create HubSpot association %s -> %s: %s", from_type, to_type, exc)
+        raise HubSpotApiError(400, message=f"No association type for {from_type} -> {to_type}")
 
     def ensure_crm_schema(self) -> dict[str, Any]:
         created: list[str] = []
@@ -908,6 +984,7 @@ class HubSpotClient:
                     ident = schema.get("objectTypeId") or schema.get("name")
                     if ident:
                         self.revenue_object_type = ident
+                        self._ensure_revenue_associations()
                         return ident
         except Exception:
             pass
@@ -926,12 +1003,23 @@ class HubSpotClient:
                 },
             )
             self.revenue_object_type = created.get("objectTypeId") or created.get("name") or "revenue_period"
+            self._ensure_revenue_associations()
             return self.revenue_object_type
         except HubSpotApiError as err:
             if err.status == 409:
                 self.revenue_object_type = "revenue_period"
+                self._ensure_revenue_associations()
                 return self.revenue_object_type
             raise
+
+    def _ensure_revenue_associations(self) -> None:
+        object_type = self.revenue_object_type
+        for other in ("deals", "companies"):
+            try:
+                self._association_cache.pop(f"{object_type}->{other}", None)
+                self._custom_association_spec(object_type, other)
+            except Exception as exc:
+                logger.warning("Revenue association %s -> %s unavailable: %s", object_type, other, exc)
 
     def get_record(self, object_type: str, ident: str, properties: list[str]) -> dict[str, Any]:
         row = self._request(

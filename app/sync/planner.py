@@ -159,7 +159,8 @@ def plan_upsert(
         if row["field"] != "aquira_version"
     ]
     unchanged = bool(existing) and (existing_hash == digest or not diffs)
-    if unchanged:
+    hubspot_id = str((existing or {}).get("hubspotId") or "").strip()
+    if unchanged and hubspot_id:
         return {
             "entityType": entity_type,
             "aquiraId": aquira_id,
@@ -301,11 +302,33 @@ def plan_deals(
     return items
 
 
-def plan_revenue(contracts: list[dict[str, Any]], existing_by_aquira: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def _revenue_contract_id(aquira_id: str, properties: dict[str, Any] | None = None) -> str:
+    props = properties or {}
+    deal_id = str(props.get("deal_aquira_id") or "").strip()
+    if deal_id:
+        return deal_id
+    text = str(aquira_id or "")
+    if ":" in text:
+        return text.split(":", 1)[0]
+    return text
+
+
+def plan_revenue(
+    contracts: list[dict[str, Any]],
+    existing_by_aquira: dict[str, dict[str, Any]],
+    *,
+    prune_stale: bool = True,
+    only_contract_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     produced: set[str] = set()
     for contract in contracts:
         periods, _summary = attach_revenue_summary(contract)
+        company_ids: list[str] = []
+        for raw in (contract.get("AccountID"), contract.get("AdvertiserID")):
+            text = str(raw or "").strip()
+            if text and text not in company_ids:
+                company_ids.append(text)
         for period in periods:
             produced.add(period["aquira_id"])
             props = {
@@ -330,25 +353,29 @@ def plan_revenue(contracts: list[dict[str, Any]], existing_by_aquira: dict[str, 
                     existing_by_aquira.get(period["aquira_id"]),
                     {
                         "dealId": str(contract.get("ID")),
-                        "companyIds": [str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")],
+                        "companyIds": company_ids,
                     },
                 )
             )
 
-    for aquira_id, existing in existing_by_aquira.items():
-        if aquira_id in produced:
-            continue
-        items.append(
-            {
-                "entityType": "revenue_period",
-                "aquiraId": aquira_id,
-                "hubspotId": existing.get("hubspotId"),
-                "action": "delete-stale",
-                "name": str((existing.get("properties") or {}).get("name") or aquira_id),
-                "diffs": [{"field": "amount", "from": (existing.get("properties") or {}).get("amount"), "to": None}],
-                "properties": {},
-            }
-        )
+    if prune_stale:
+        for aquira_id, existing in existing_by_aquira.items():
+            if aquira_id in produced:
+                continue
+            owner = _revenue_contract_id(aquira_id, existing.get("properties") or {})
+            if only_contract_ids is not None and owner not in only_contract_ids:
+                continue
+            items.append(
+                {
+                    "entityType": "revenue_period",
+                    "aquiraId": aquira_id,
+                    "hubspotId": existing.get("hubspotId"),
+                    "action": "delete-stale",
+                    "name": str((existing.get("properties") or {}).get("name") or aquira_id),
+                    "diffs": [{"field": "amount", "from": (existing.get("properties") or {}).get("amount"), "to": None}],
+                    "properties": {},
+                }
+            )
     return items
 
 

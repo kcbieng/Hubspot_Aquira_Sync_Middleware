@@ -102,11 +102,50 @@ def test_plan_revenue_emits_monthly_periods_and_stale_deletes():
         "AdvertiserID": 10,
         "lines": [],
     }
-    existing = {"1:2026-04:0": {"hubspotId": "rev-old", "properties": {"amount": 1}}}
+    existing = {"1:2026-04:0": {"hubspotId": "rev-old", "properties": {"amount": 1, "deal_aquira_id": "1"}}}
     items = plan_revenue([contract], existing)
     actions = {item["action"] for item in items}
     assert "create" in actions
     assert "delete-stale" in actions
+
+
+def test_partial_revenue_plan_does_not_delete_other_contracts():
+    contract = {
+        "ID": 42,
+        "ContractCD": "1064",
+        "IsContract": True,
+        "TotalValue": 320,
+        "StartDate": "2026-10-01",
+        "EndDate": "2026-10-31",
+        "AccountID": 3,
+        "AdvertiserID": 3,
+        "lines": [],
+    }
+    existing = {
+        "99:2026-10:0": {"hubspotId": "rev-other", "properties": {"amount": 500, "deal_aquira_id": "99"}},
+        "42:2026-11:0": {"hubspotId": "rev-stale", "properties": {"amount": 1, "deal_aquira_id": "42"}},
+    }
+    items = plan_revenue([contract], existing, prune_stale=True, only_contract_ids={"42"})
+    stale = [item for item in items if item["action"] == "delete-stale"]
+    assert [item["aquiraId"] for item in stale] == ["42:2026-11:0"]
+
+
+def test_empty_catalog_does_not_prune_revenue_periods():
+    existing = {"99:2026-10:0": {"hubspotId": "rev-other", "properties": {"amount": 500, "deal_aquira_id": "99"}}}
+    items = plan_revenue([], existing, prune_stale=False)
+    assert items == []
+    items = plan_revenue([], existing, prune_stale=True, only_contract_ids=set())
+    assert items == []
+
+
+def test_skip_requires_hubspot_id():
+    from app.sync.planner import plan_upsert
+
+    props = {"aquira_id": "42:2026-10:0", "amount": 320}
+    skipped = plan_upsert("revenue_period", "42:2026-10:0", "x", props, {"hubspotId": "hs-1", "properties": props, "hash": content_hash(props)})
+    assert skipped["action"] == "skip"
+    created = plan_upsert("revenue_period", "42:2026-10:0", "x", props, {"hubspotId": "", "properties": props, "hash": content_hash(props)})
+    assert created["action"] in {"create", "update"}
 
 
 def test_plan_identity_writeback_when_hubspot_is_sot():

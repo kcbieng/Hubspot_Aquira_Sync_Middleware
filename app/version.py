@@ -1,1 +1,1 @@
-REVISION = "2026.09.04-provided-mark"
+REVISION = "2026.09.08-revenue-period-restore"

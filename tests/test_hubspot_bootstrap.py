@@ -226,3 +226,34 @@ def test_upsert_crm_drops_unknown_properties_when_create_fails():
             {"aquira_id": "56:2026-01:0", "amount": 100, "period": "2026-01-01", "spot_amount": 100},
         )
     assert result["id"] == "rp-2"
+
+
+def test_conflict_object_id_parses_hubspot_context():
+    from app.hubspot.client import _conflict_object_id
+
+    body = '{"status":"error","message":"already exists","context":{"id":["61356780102"]}}'
+    assert _conflict_object_id(body) == "61356780102"
+
+
+def test_upsert_restores_archived_conflict():
+    from app.hubspot.client import HubSpotApiError
+
+    client = HubSpotClient(access_token="token")
+    restored = []
+
+    def fake_request(method, path, **kwargs):
+        if method == "GET" and "/properties/" in path:
+            return {"results": [{"name": "aquira_id"}, {"name": "amount"}]}
+        if method == "POST" and path.endswith("/objects/2-68669284"):
+            raise HubSpotApiError(409, '{"context":{"id":["61356780102"]}}', "conflict")
+        if method == "POST" and path.endswith("/restore"):
+            restored.append(path)
+            return {}
+        if method == "PATCH" and path.endswith("/61356780102"):
+            return {"id": "61356780102"}
+        raise AssertionError(f"unexpected {method} {path}")
+
+    with patch.object(client, "_request", side_effect=fake_request):
+        result = client.upsert_crm("2-68669284", {"aquira_id": "42:2026-10:0", "amount": 320})
+    assert result["id"] == "61356780102"
+    assert restored
