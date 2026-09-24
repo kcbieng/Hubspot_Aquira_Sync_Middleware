@@ -1062,6 +1062,19 @@ class HubSpotClient:
             warnings.append(f"Revenue period schema unavailable: {exc}")
         return {"created": created, "moved": moved, "warnings": warnings}
 
+    def deal_pipelines(self) -> list[dict[str, Any]]:
+        """Pipelines + stages for the admin mapping page. Stage ids in custom
+        pipelines are opaque GUIDs — the UI must show labels and send ids."""
+        payload = self._request("GET", "/crm/v3/pipelines/deals")
+        out: list[dict[str, Any]] = []
+        for pipe in payload.get("results") or []:
+            stages = [
+                {"id": str(s.get("id") or ""), "label": str(s.get("label") or s.get("id") or "")}
+                for s in (pipe.get("stages") or [])
+            ]
+            out.append({"id": str(pipe.get("id") or ""), "label": str(pipe.get("label") or pipe.get("id") or ""), "stages": stages})
+        return out
+
     def ensure_proposal_stage(self) -> str:
         try:
             payload = self._request("GET", "/crm/v3/pipelines/deals")

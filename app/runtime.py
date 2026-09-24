@@ -30,7 +30,7 @@ BOOL_KEYS = {
     "sso_enabled",
 }
 
-INT_KEYS = {"sync_interval_minutes", "smtp_port"}
+INT_KEYS = {"sync_interval_minutes", "smtp_port", "dlq_retry_minutes", "dlq_freeze_after"}
 
 # Process identity — never take these from the settings table or the UI can pin the
 # HTTP container to role=all and run catalog pulls on the middleware thread.

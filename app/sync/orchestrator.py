@@ -172,6 +172,7 @@ class SyncOrchestrator:
         match_rules: dict[str, list[dict[str, Any]]] | None = None,
         match_exclusions: dict[str, set[tuple[str, str]]] | None = None,
         create_blocked_ids: set[str] | None = None,
+        stage_map: dict[str, str] | None = None,
     ) -> list[dict[str, Any]]:
         wanted = self._wanted(entities)
         clients = catalog.get("clients") or []
@@ -244,7 +245,14 @@ class SyncOrchestrator:
                 items.extend(plan_contacts(contacts, contacts_by_aquira, contacts_by_email))
         if "deals" in wanted:
             items.extend(
-                plan_deals(contracts, deals_by_aquira, owner_by_aquira, client_name_by_id, snap.get("deal") or {})
+                plan_deals(
+                    contracts,
+                    deals_by_aquira,
+                    owner_by_aquira,
+                    client_name_by_id,
+                    snap.get("deal") or {},
+                    stage_map or None,
+                )
             )
             if aquira_id is None:
                 catalog_deal_ids = {str(row.get("ID")) for row in contracts if row.get("ID") is not None}
@@ -711,7 +719,20 @@ class SyncOrchestrator:
 
         hs_type = self._hubspot_type(item["entityType"], hubspot)
         properties = dict(item.get("properties") or {})
-        if item.get("entityType") == "deal" and properties.get("dealstage") == "proposal" and hasattr(hubspot, "ensure_proposal_stage"):
+        stage_settings = get_settings()
+        # The legacy rescue belongs to the DEFAULT-pipeline world where the
+        # literal "proposal" token survived planning: an explicit proposal
+        # mapping has already replaced the token, and a custom pipeline's ids
+        # cannot be found by ensure_proposal_stage (it picks from the account's
+        # FIRST pipeline). But it must still fire when the operator mapped
+        # only won/lost and proposals deliberately stay semantic.
+        if (
+            item.get("entityType") == "deal"
+            and properties.get("dealstage") == "proposal"
+            and not (stage_settings.hubspot_stage_proposal or "").strip()
+            and not (stage_settings.hubspot_deal_pipeline or "").strip()
+            and hasattr(hubspot, "ensure_proposal_stage")
+        ):
             properties["dealstage"] = hubspot.ensure_proposal_stage()
         record = hubspot.upsert_crm(hs_type, properties, item.get("hubspotId"))
         item["hubspotId"] = record.get("id")
@@ -789,6 +810,15 @@ class SyncOrchestrator:
         live_aquira = aquira
         live_hubspot = hubspot
         try:
+            try:
+                from app.runtime import apply_db_overlay
+
+                # Live settings for a long-running worker: the sync must see
+                # the stage mapping and toggles the operator saved since this
+                # process booted (the UI is a different container).
+                apply_db_overlay()
+            except Exception:
+                logger.debug("settings overlay refresh failed; using boot-time values", exc_info=True)
             settings = get_settings()
             if catalog is None or existing is None:
                 live_aquira, live_hubspot, pulled_catalog, pulled_existing = self._pull_live(
@@ -891,6 +921,17 @@ class SyncOrchestrator:
                     )
                 except Exception:
                     create_blocked = set()
+            stage_map = {
+                key: str(getattr(settings, f"hubspot_stage_{key}") or "").strip()
+                for key in ("proposal", "won", "lost")
+            }
+            stage_map = {
+                ("closedwon" if k == "won" else "closedlost" if k == "lost" else k): v
+                for k, v in stage_map.items()
+                if v
+            }
+            if (settings.hubspot_deal_pipeline or "").strip():
+                stage_map["pipeline"] = settings.hubspot_deal_pipeline.strip()
             items = self.build_plan(
                 catalog,
                 existing,
@@ -903,6 +944,7 @@ class SyncOrchestrator:
                 match_rules=match_rules,
                 match_exclusions=match_exclusions,
                 create_blocked_ids=create_blocked,
+                stage_map=stage_map or None,
             )
             clients_by_aid = {str(row.get("ID")): row for row in catalog.get("clients") or []}
             contacts_by_aid = {str(row.get("ID")): row for row in catalog.get("contacts") or []}
@@ -916,6 +958,7 @@ class SyncOrchestrator:
             lookup = _lookup_from_existing(existing)
 
             applied: list[dict[str, Any]] = []
+            reconciled_pairs: list[dict[str, Any]] = []
             if not items:
                 if warnings:
                     message = "; ".join(warnings)
@@ -987,6 +1030,19 @@ class SyncOrchestrator:
                                 pass
                         if not context.whatif:
                             self._persist_snapshot(repo, next_item, clients_by_aid, contacts_by_aid)
+                            # A live write success closes any pending failed-write
+                            # row for this record — reconciliation is then automatic.
+                            # ONLY a real write: skip/notice/archive performed no
+                            # update, and resolving a row on those would tell the
+                            # operator a broken record was fixed.
+                            if str(next_item.get("action") or "") in {"create", "update"}:
+                                reconciled_pairs.append(
+                                    {
+                                        "entity_type": str(next_item.get("entityType") or ""),
+                                        "aquira_id": str(next_item.get("aquiraId") or ""),
+                                        "hubspot_id": str(next_item.get("hubspotId") or ""),
+                                    }
+                                )
                     except Exception as exc:
                         message = str(exc)
                         failed = {**item, "action": "error", "error": message}
@@ -1005,11 +1061,20 @@ class SyncOrchestrator:
                                 item.get("entityType"),
                                 item.get("aquiraId"),
                                 message,
-                                {**(item.get("properties") or {}), "_hubspotId": item.get("hubspotId")},
+                                item.get("properties") or {},
                                 attempts=1,
+                                hubspot_id=item.get("hubspotId"),
                             )
                         except Exception:
                             pass
+
+            try:
+                if reconciled_pairs and hasattr(repo, "resolve_dead_letters"):
+                    closed = repo.resolve_dead_letters(reconciled_pairs, f"written by sync #{getattr(run, 'id', None)}")
+                    if closed:
+                        repo.add_event("sync", "INFO", f"{closed} pending failed-write row(s) auto-resolved", {})
+            except Exception:
+                logger.debug("dead-letter auto-resolve failed", exc_info=True)
 
             try:
                 self._record_suggestions(repo, items, catalog, existing, getattr(run, "id", None))

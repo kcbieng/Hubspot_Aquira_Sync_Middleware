@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import _run_sync_now, router as api_router, run_sync_client, run_sync_contract, sync_status_stub
-from app.jobs.poll import PollJob, set_active_job
+from app.jobs.poll import set_active_job
 from app.runtime import apply_db_overlay
 from app.session import is_logged_in
 from app.settings import get_settings
@@ -16,7 +16,6 @@ from app.ui.routes import router as ui_router
 from app.version import REVISION
 from app.webhooks.routes import router as webhook_router
 
-poll_job: PollJob | None = None
 OPEN_API_PATHS = {"/api/login", "/api/logout"}
 
 
@@ -34,7 +33,6 @@ def _configure_logging() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global poll_job
     _configure_logging()
     apply_db_overlay()
     settings = get_settings()
@@ -48,12 +46,9 @@ async def lifespan(_: FastAPI):
     if can_execute_jobs():
         scheduler = BackgroundScheduler(timezone=settings.timezone)
         scheduler.start()
-        poll_job = PollJob(scheduler)
-        poll_job.schedule(settings.sync_interval_minutes)
-        set_active_job(poll_job)
-        from app.notify import run_match_digest
+        from app.jobs.setup import register_default_jobs
 
-        scheduler.add_job(run_match_digest, "cron", hour=7, minute=5, replace_existing=True, id="match_digest")
+        register_default_jobs(scheduler, settings)
     try:
         yield
     finally:

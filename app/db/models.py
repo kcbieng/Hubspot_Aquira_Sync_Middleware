@@ -58,15 +58,27 @@ class JobEvent(Base):
 
 
 class DeadLetter(Base):
+    """A write that failed. Not a graveyard: open rows are retried by
+    reconciliation as FRESH targeted syncs (current logic, current data — the
+    stored payload is history, never a replay script), auto-close when a later
+    sync writes the record successfully, and freeze after the retry budget so
+    they escalate to a human instead of hammering the API forever."""
+
     __tablename__ = "dead_letter"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     ts: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     entity_type: Mapped[str] = mapped_column(String(50))
     aquira_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    hubspot_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error: Mapped[str] = mapped_column(Text)
     payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="open", default="open")  # open|frozen|resolved
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    resolution: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class AppSetting(Base):

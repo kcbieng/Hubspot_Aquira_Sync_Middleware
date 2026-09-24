@@ -94,9 +94,40 @@ def test_repo_surfaces_open_create_failures(tmp_path):
     db_mod.Base.metadata.create_all(engine)
     repo = Repo(session=sessionmaker(bind=engine)())
     repo.add_dead_letter("client", None, "create blew up", {"Name": "X", "_hubspotId": "hs-9"}, attempts=1)
-    repo.add_dead_letter("client", "44", "later update failed", {"_hubspotId": "hs-9"}, attempts=1)  # linked -> not create-blocked
-    repo.add_dead_letter("deal", None, "no hubspot key", {"x": 1}, attempts=1)
+    # An unconfirmed create blocks IMMEDIATELY (open counts): the create can
+    # have committed in Aquira before raising, and re-approving it would
+    # duplicate a master-system record that cannot be cleanly undone.
     assert repo.open_client_create_failures() == {"hs-9"}
+    repo.add_dead_letter("client", None, "create blew up again", {"_hubspotId": "hs-9"}, attempts=0)
+    assert len(repo.list_dead_letters(("open", "frozen"))) == 1  # folded, not duplicated
+    assert repo.open_client_create_failures() == {"hs-9"}  # freezing is not what gates
+    repo.add_dead_letter("deal", None, "deal failure", {"x": 1}, attempts=1)
+    assert repo.open_client_create_failures() == {"hs-9"}  # client gate ignores other entities
+    # The operator fixes the cause and resolves the row: the next writeback
+    # pass re-proposes the create normally.
+    create_row = next(r for r in repo.list_dead_letters(("open",)) if r.entity_type == "client")
+    repo.resolve_dead_letter_by_id(create_row.id, "unblocked by hand")
+    assert repo.open_client_create_failures() == set()
+
+
+def test_fold_that_learns_the_aquira_id_releases_the_gate(tmp_path):
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.db as db_mod
+    from app.db.repo import Repo
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'gate2.db'}", future=True)
+    db_mod.Base.metadata.create_all(engine)
+    repo = Repo(session=sessionmaker(bind=engine)())
+    repo.add_dead_letter("client", None, "create failed reload", {"_hubspotId": "hs-9"}, attempts=1)
+    assert repo.open_client_create_failures() == {"hs-9"}
+    # A later failure arrives KNOWING the Aquira id (44): the create did land,
+    # so the fold backfills the id and the gate releases — a retry now links,
+    # it cannot duplicate.
+    repo.add_dead_letter("client", "44", "update failed", {"_hubspotId": "hs-9"}, attempts=1)
+    assert len(repo.list_dead_letters(("open", "frozen"))) == 1
+    assert repo.open_client_create_failures() == set()
 
 
 def test_plan_integration_respects_the_gate(monkeypatch):

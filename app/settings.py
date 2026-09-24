@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     sso_admin_group: str = ""  # Entra object id of HQ-Admins; membership => admin
     sso_sales_group: str = ""  # Entra object id of HQ-Sales; membership => sales (else denied)
     teams_webhook_url: str = ""  # M365 Workflows "post to channel when webhook request is received"
+    hubspot_deal_pipeline: str = ""  # custom deal pipeline id; empty = "default"
+    hubspot_stage_proposal: str = ""  # where open proposals land
+    hubspot_stage_won: str = ""  # where booked contracts land (was "closedwon")
+    hubspot_stage_lost: str = ""  # where cancelled/dead proposals land (was "closedlost")
+    dlq_retry_minutes: int = 45  # dead-letter reconciliation cadence + first backoff step
+    dlq_freeze_after: int = 5  # attempts before a row freezes for human review
 
     @property
     def effective_database_url(self) -> str:

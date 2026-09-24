@@ -1,46 +1,85 @@
 {% extends "base.html" %}
 {% block content %}
   <div class="panel-card p-4 p-md-5 mb-4">
-    <div class="page-header">
+    <div class="page-header d-flex justify-content-between align-items-start">
       <div>
         <div class="text-uppercase small text-primary fw-bold mb-1">Operations</div>
-        <h2 class="mb-0">Dead letters</h2>
+        <h2 class="mb-0">Failed record writes</h2>
+      </div>
+      <div class="small text-end">
+        <span class="badge text-bg-warning">{{ counts.get('open', 0) }} retrying</span>
+        <span class="badge text-bg-danger">{{ counts.get('frozen', 0) }} need review</span>
+        <span class="badge text-bg-success">{{ counts.get('resolved', 0) }} resolved</span>
       </div>
     </div>
     <p class="text-muted">
-      Individual records whose write failed during a live sync (HubSpot rejected it, association missing,
-      network error). <strong>Retry record</strong> queues a targeted live sync for that Aquira id — if it
-      succeeds the field diffs disappear on the next run, and you can mark the row resolved. If a whole run
-      failed, use Runs instead; these rows are per-record failures <em>inside</em> otherwise-live runs.
+      Records whose write failed during a sync. Each open row is retried automatically by the
+      reconciliation job as a <strong>fresh targeted sync</strong> — never a replay of stored data —
+      so a fix on the Settings or Deal-stages pages takes effect on the very next attempt. Backoff
+      grows with each try; after the retry budget a row shows <em>need review</em> and waits for you.
+      When a later sync writes the record successfully, its row closes itself here. One exception:
+      a failed <strong>Aquira client create</strong> is held for you immediately — the create can
+      succeed in Aquira even while reporting failure, so only a human (marking the row Resolved)
+      re-arms it, never the machine.
     </p>
+    {% if counts.get('frozen', 0) %}
+      <form method="post" action="/ui/deadletters" class="mb-3">
+        <button class="btn btn-outline-warning btn-sm" type="submit" name="action" value="unfreeze-all">
+          Fixed a setting? Retry all {{ counts.get('frozen', 0) }} held row(s) now
+        </button>
+      </form>
+    {% endif %}
     <div class="table-responsive">
       <table class="table table-sm align-middle">
         <thead>
-          <tr><th>#</th><th>When</th><th>Entity</th><th>Aquira id</th><th>Attempts</th><th>Error</th><th class="text-end">Actions</th></tr>
+          <tr><th>#</th><th>Entity</th><th>Aquira / HubSpot</th><th>State</th><th>Attempts</th><th>Failing since</th><th>Next try</th><th>Error</th><th class="text-end">Actions</th></tr>
         </thead>
         <tbody>
           {% for row in rows %}
             <tr>
               <td class="small">{{ row.id }}</td>
-              <td class="small text-nowrap">{{ row.ts.strftime('%Y-%m-%d %H:%M') if row.ts else '—' }}</td>
               <td class="small">{{ row.entity_type }}</td>
-              <td class="small">{{ row.aquira_id or '—' }}</td>
+              <td class="small">{{ row.aquira_id or '—' }} / {{ row.hubspot_id or '—' }}</td>
+              <td>
+                <span class="badge text-bg-{% if row.status == 'frozen' %}danger{% else %}warning{% endif %}">
+                  {{ 'held — needs review' if row.status == 'frozen' else 'retrying' }}
+                </span>
+              </td>
               <td class="small">{{ row.attempts }}</td>
-              <td class="small text-danger" style="max-width: 40rem; word-break: break-word;">{{ row.error }}</td>
+              <td class="small text-nowrap">{{ row.ts.strftime('%Y-%m-%d %H:%M') if row.ts else '—' }}</td>
+              <td class="small text-nowrap">{{ row.next_retry_at.strftime('%m-%d %H:%M') if row.next_retry_at else '—' }}</td>
+              <td class="small text-danger" style="max-width: 26rem; word-break: break-word;">{{ row.error }}</td>
               <td>
                 <form method="post" action="/ui/deadletters" class="d-flex gap-2 justify-content-end">
                   <input type="hidden" name="row_id" value="{{ row.id }}">
-                  <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="retry">Retry record</button>
-                  <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete"
-                          onclick="return confirm('Mark dead letter #{{ row.id }} resolved and delete it?')">Resolved</button>
+                  <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="retry">Retry next pass</button>
+                  <button class="btn btn-outline-success btn-sm" type="submit" name="action" value="resolved"
+                          onclick="return confirm('Row {{ row.id }}: mark resolved without a retry?')">Resolved</button>
+                  <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="delete"
+                          onclick="return confirm('Row {{ row.id }}: delete this history entry entirely?')">Delete</button>
                 </form>
               </td>
             </tr>
           {% else %}
-            <tr><td colspan="7" class="text-muted">Nothing stuck. The quietest page in the app.</td></tr>
+            <tr><td colspan="9" class="text-muted">Nothing pending. The quietest page in the app.</td></tr>
           {% endfor %}
         </tbody>
       </table>
     </div>
+    {% if resolved_rows %}
+      <h3 class="h6 mt-4">Recently resolved</h3>
+      <table class="table table-sm small text-muted">
+        <tbody>
+          {% for row in resolved_rows %}
+            <tr>
+              <td>{{ row.entity_type }}</td>
+              <td>{{ row.aquira_id or row.hubspot_id or '—' }}</td>
+              <td>{{ row.resolution }}</td>
+              <td class="text-end">{{ row.resolved_at.strftime('%Y-%m-%d %H:%M') if row.resolved_at else '' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
   </div>
 {% endblock %}

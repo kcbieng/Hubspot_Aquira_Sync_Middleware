@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
+from app.settings import get_settings
 from app.db.models import (
     AppSetting,
     AppUser,
@@ -34,6 +35,22 @@ def _as_datetime(value: str | datetime | None) -> datetime | None:
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
     return datetime.fromisoformat(value)
+
+
+def dlq_budgets(settings: Any | None = None) -> tuple[int, int]:
+    """(retry_minutes, freeze_after), clamped identically at EVERY use site —
+    the cadence floor matches schedule_reconciliation's, and a 0/None/garbage
+    value can neither erase the backoff nor freeze rows on the first sight."""
+    settings = settings or get_settings()
+    try:
+        minutes = max(int(settings.dlq_retry_minutes), 5)
+    except (TypeError, ValueError):
+        minutes = 45
+    try:
+        budget = max(int(settings.dlq_freeze_after), 2)
+    except (TypeError, ValueError):
+        budget = 5
+    return minutes, budget
 
 
 class Repo:
@@ -106,22 +123,181 @@ class Repo:
         error: str,
         payload: Any | None = None,
         attempts: int = 0,
+        hubspot_id: str | None = None,
     ) -> None:
+        """One open row per record. A repeat failure refreshes the existing row
+        (error text, schedule) instead of growing a pile of duplicates — the
+        queue stays a queue. It does NOT touch the retry budget: attempts are
+        charged exactly once per reconciliation cycle (mark_reconciled), so a
+        record that fails several times while a cycle is in flight neither
+        doubles its charge nor freezes in a path that raises no alert.
+        ts keeps the FIRST failure time — "failing since" must stay readable."""
+        minutes, _budget = dlq_budgets(get_settings())
+        now = datetime.utcnow()
+        hid = str(hubspot_id or "").strip()[:100]
+        if not hid and isinstance(payload, dict):
+            hid = str(payload.get("_hubspotId") or "").strip()[:100]  # legacy payloads embedded the id
+        aid = (str(aquira_id) if aquira_id is not None else "")[:100] or None
+        open_row = None
+        stmt = (
+            select(DeadLetter)
+            .where(DeadLetter.entity_type == entity_type, DeadLetter.status.in_(("open", "frozen")))
+            .order_by(DeadLetter.id)
+        )
+        if aid:
+            open_row = self.session.execute(stmt.where(DeadLetter.aquira_id == aid)).scalars().first()
+        if open_row is None and hid:
+            open_row = self.session.execute(stmt.where(DeadLetter.hubspot_id == hid)).scalars().first()
+        if open_row is not None:
+            open_row.error = error
+            open_row.last_attempt_at = now
+            # A fold that learns the record's other id must not stay
+            # mis-typed (e.g. a create failure that is really an update failure).
+            open_row.aquira_id = open_row.aquira_id or aid
+            open_row.hubspot_id = open_row.hubspot_id or (hid or None)
+            if open_row.status == "open" and (open_row.next_retry_at is None or open_row.next_retry_at <= now):
+                open_row.next_retry_at = now + timedelta(minutes=minutes)
+            self.session.add(open_row)
+            self.session.commit()
+            return
+        try:
+            initial_attempts = int(attempts or 0)
+        except (TypeError, ValueError):
+            initial_attempts = 0
         self.session.add(
             DeadLetter(
                 entity_type=entity_type,
-                aquira_id=str(aquira_id) if aquira_id is not None else None,
+                aquira_id=aid,
+                hubspot_id=hid or None,
                 error=error,
                 payload_json=json.dumps(payload) if payload is not None else None,
-                attempts=attempts,
+                attempts=initial_attempts,
+                status="open",
+                last_attempt_at=now,
+                next_retry_at=now + timedelta(minutes=minutes),
             )
         )
         self.session.commit()
 
-    def list_dead_letters(self, limit: int = 200) -> list[DeadLetter]:
+    def resolve_dead_letters(self, pairs: list[dict[str, Any]], resolution: str) -> int:
+        """Close open/frozen rows whose record just wrote successfully. Called
+        after LIVE apply successes only — a whatif plan never resolves anything."""
+        closed = 0
+        now = datetime.utcnow()
+        for pair in pairs or []:
+            etype = str(pair.get("entity_type") or "")
+            aid = str(pair.get("aquira_id") or "").strip()
+            hid = str(pair.get("hubspot_id") or "").strip()
+            if not etype or not (aid or hid):
+                continue
+            conds = []
+            if aid:
+                conds.append(DeadLetter.aquira_id == aid)
+            if hid:
+                conds.append(DeadLetter.hubspot_id == hid)
+            # OR across both keys: a create failure logged with only a
+            # hubspot_id matches the success item that now also has an aquira_id.
+            stmt = select(DeadLetter).where(
+                DeadLetter.entity_type == etype, DeadLetter.status.in_(("open", "frozen")), or_(*conds)
+            )
+            rows = self.session.execute(stmt).scalars().all()
+            for row in rows:
+                row.status = "resolved"
+                row.resolved_at = now
+                row.resolution = resolution[:255]
+                self.session.add(row)
+                closed += 1
+        if closed:
+            self.session.commit()
+        return closed
+
+    def due_dead_letters(self, now: datetime, limit: int = 50) -> list[DeadLetter]:
         return list(
-            self.session.execute(select(DeadLetter).order_by(DeadLetter.id.desc()).limit(limit)).scalars().all()
+            self.session.execute(
+                select(DeadLetter)
+                .where(
+                    DeadLetter.status == "open",
+                    (DeadLetter.next_retry_at.is_(None)) | (DeadLetter.next_retry_at <= now),
+                )
+                # NULL next_retry_at means "never scheduled" — due NOW. Postgres
+                # sorts NULLs LAST on ASC (SQLite/MySQL first), so without
+                # nulls_first the backfilled legacy cohort starves behind dated
+                # rows under the limit on the primary backend.
+                .order_by(DeadLetter.next_retry_at.asc().nulls_first(), DeadLetter.id)
+                .limit(limit)
+            ).scalars().all()
         )
+
+    def mark_reconciled(self, ids: list[int]) -> list[DeadLetter]:
+        """Charge the reconciliation cycle just STARTED for these rows: one
+        attempt each, growing backoff; rows that hit the budget freeze here —
+        the single freeze path, and the one the Teams escalation is raised
+        from (add_dead_letter never freezes). Expire cached state first so a
+        row the retried sync already resolved, or an operator marked resolved
+        from the web container while this pass was enqueueing, is re-read
+        instead of resurrected from a stale identity-mapped 'open'."""
+        minutes, budget = dlq_budgets(get_settings())
+        self.session.expire_all()
+        now = datetime.utcnow()
+        out: list[DeadLetter] = []
+        for row_id in ids:
+            row = self.session.get(DeadLetter, int(row_id))
+            if row is None or row.status != "open":
+                continue
+            row.attempts = (row.attempts or 0) + 1
+            row.last_attempt_at = now
+            if row.attempts >= budget:
+                row.status = "frozen"
+                row.next_retry_at = None
+            else:
+                row.next_retry_at = now + timedelta(minutes=minutes * max(1, row.attempts))
+            self.session.add(row)
+            out.append(row)
+        if out:
+            self.session.commit()
+        return out
+
+    def freeze_dead_letters(self, ids: list[int], resolution: str) -> list[DeadLetter]:
+        """Hold rows that automated retry cannot express (a failed client
+        create the gate must keep holding; a client writeback retry while
+        sync_writeback is off; a row that entered this pass already past
+        budget). They skip the cycle — no enqueue, no charge — and wait for a
+        human with the reason visible in the row."""
+        self.session.expire_all()
+        out: list[DeadLetter] = []
+        for row_id in ids:
+            row = self.session.get(DeadLetter, int(row_id))
+            if row is None or row.status != "open":
+                continue
+            row.status = "frozen"
+            row.next_retry_at = None
+            row.resolution = str(resolution or "")[:255]
+            self.session.add(row)
+            out.append(row)
+        if out:
+            self.session.commit()
+        return out
+
+    def unfreeze_dead_letters(self) -> int:
+        rows = self.session.execute(select(DeadLetter).where(DeadLetter.status == "frozen")).scalars().all()
+        now = datetime.utcnow()
+        for row in rows:
+            row.status = "open"
+            row.attempts = 0
+            row.next_retry_at = now
+        if rows:
+            self.session.commit()
+        return len(rows)
+
+    def dead_letter_counts(self) -> dict[str, int]:
+        rows = self.session.execute(select(DeadLetter.status, func.count()).group_by(DeadLetter.status)).all()
+        return {str(status or "open"): int(count) for status, count in rows}
+
+    def list_dead_letters(self, statuses: tuple[str, ...] | None = None, limit: int = 200) -> list[DeadLetter]:
+        stmt = select(DeadLetter).order_by(DeadLetter.id.desc()).limit(limit)
+        if statuses:
+            stmt = stmt.where(DeadLetter.status.in_(statuses))
+        return list(self.session.execute(stmt).scalars().all())
 
     def delete_dead_letter(self, dead_letter_id: int) -> None:
         row = self.session.get(DeadLetter, int(dead_letter_id))
@@ -129,26 +305,54 @@ class Repo:
             self.session.delete(row)
             self.session.commit()
 
-    def bump_dead_letter(self, dead_letter_id: int) -> None:
+    def retry_dead_letter_now(self, dead_letter_id: int) -> None:
         row = self.session.get(DeadLetter, int(dead_letter_id))
-        if row is not None:
-            row.attempts = (row.attempts or 0) + 1
+        if row is not None and row.status in {"open", "frozen"}:
+            if row.status == "frozen":
+                # A held row would otherwise re-freeze on the very next pass;
+                # clicking Retry on it means "the operator fixed something".
+                row.attempts = 0
+            row.status = "open"
+            row.next_retry_at = datetime.utcnow()
+            self.session.add(row)
+            self.session.commit()
+
+    def resolve_dead_letter_by_id(self, dead_letter_id: int, resolution: str) -> None:
+        row = self.session.get(DeadLetter, int(dead_letter_id))
+        if row is not None and row.status in {"open", "frozen"}:
+            row.status = "resolved"
+            row.resolved_at = datetime.utcnow()
+            row.resolution = resolution[:255]
             self.session.add(row)
             self.session.commit()
 
     def open_client_create_failures(self) -> set[str]:
-        """HubSpot company ids whose client-creation attempt is still sitting in
-        the dead-letter table — the create gate honors these and waits."""
+        """HubSpot company ids whose client-creation success is UNCONFIRMED —
+        every unresolved dead-letter row for a create (open OR frozen) blocks
+        re-approving it. This is deliberate: POST /Client/Create can commit
+        the client and then raise while reloading it, so the record exists in
+        Aquira while the row says 'not created' — retrying the create against
+        that belief duplicates a master-system record, and Aquira deactivates
+        rather than deletes. The operator fixes the underlying problem and
+        marks the row Resolved; the next writeback pass retries. Rows that
+        learned an aquira_id (the create did record itself) stop gating: the
+        retry links instead of creating."""
         out: set[str] = set()
         rows = self.session.execute(
-            select(DeadLetter).where(DeadLetter.entity_type == "client", DeadLetter.aquira_id.is_(None))
+            select(DeadLetter).where(
+                DeadLetter.entity_type == "client",
+                DeadLetter.aquira_id.is_(None),
+                or_(DeadLetter.status.is_(None), DeadLetter.status != "resolved"),
+            )
         ).scalars().all()
         for row in rows:
-            try:
-                payload = json.loads(row.payload_json) if row.payload_json else {}
-            except (TypeError, ValueError):
-                payload = {}
-            hid = str((payload or {}).get("_hubspotId") or "").strip()
+            hid = str(row.hubspot_id or "").strip()
+            if not hid:
+                try:
+                    payload = json.loads(row.payload_json) if row.payload_json else {}
+                except (TypeError, ValueError):
+                    payload = {}
+                hid = str((payload or {}).get("_hubspotId") or "").strip()
             if hid:
                 out.add(hid)
         return out

@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4" id="stage-mapper"
+       data-pipelines='{{ pipelines | tojson }}'>
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Pipeline</div>
+        <h2 class="mb-0">Deal stages</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      HubQuira derives three lifecycle states from Aquira — <strong>open proposal</strong>,
+      <strong>booked contract</strong>, <strong>cancelled / dead</strong> — and needs your pipeline's actual
+      stage IDs for them (custom pipelines use opaque IDs; the built-in
+      <code>closedwon/closedlost</code> names do not exist there, and writes will 400 until this page is
+      configured). Leave everything blank only if you use HubSpot&rsquo;s original &ldquo;default&rdquo;
+      pipeline.
+    </p>
+    {% if error %}<div class="alert alert-warning">{{ error }}</div>{% endif %}
+    {% if not pipelines %}
+      <p class="text-muted">No pipelines loaded — configure the HubSpot token first, then reload.</p>
+    {% else %}
+      <form method="post" action="/ui/stages">
+        <div class="row g-3 align-items-end mb-3">
+          <div class="col-md-5">
+            <label class="form-label" for="pipeline">Deal pipeline</label>
+            <select class="form-select" id="pipeline" name="pipeline">
+              <option value="" {% if not current.pipeline %}selected{% endif %}>— default pipeline (built-in stages) —</option>
+              {% for p in pipelines %}
+                <option value="{{ p.id }}" {% if current.pipeline == p.id %}selected{% endif %}>{{ p.label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="col-md-3">
+            <button class="btn btn-outline-primary w-100" type="submit" name="action" value="autodetect"
+                    onclick="return confirm('Autodetect replaces the three stage mappings with label matches — continue?')">Autodetect stages by label</button>
+          </div>
+        </div>
+        <div class="row g-3">
+          <div class="col-md-4">
+            <label class="form-label" for="stage_proposal">Open proposals land in</label>
+            <select class="form-select" id="stage_proposal" name="stage_proposal"></select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="stage_won">Booked contracts land in</label>
+            <select class="form-select" id="stage_won" name="stage_won"></select>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="stage_lost">Cancelled / dead proposals land in</label>
+            <select class="form-select" id="stage_lost" name="stage_lost"></select>
+          </div>
+        </div>
+        <div class="mt-3">
+          <button class="btn btn-primary" type="submit" name="action" value="save">Save mapping</button>
+        </div>
+        <input type="hidden" id="current-map"
+               data-proposal="{{ current.proposal }}" data-won="{{ current.won }}" data-lost="{{ current.lost }}">
+      </form>
+    {% endif %}
+    <div class="alert alert-info mt-4 mb-0 small">
+      After saving, the next sync treats every mapping change as a source transition and re-stages the
+      affected deals — including the ones that failed with stage errors (check Dead letters). Human-only
+      stage drags remain preserved afterwards, per the usual rules.
+    </div>
+  </div>
+  <script>
+    (function () {
+      const root = document.getElementById('stage-mapper');
+      const pipelines = JSON.parse(root.dataset.pipelines || '[]');
+      const sel = document.getElementById('pipeline');
+      if (!sel) return;
+      const current = document.getElementById('current-map') || {};
+      const targets = [['stage_proposal', 'proposal'], ['stage_won', 'won'], ['stage_lost', 'lost']];
+      function opt(value, label) {
+        // DOM API, never string-building: stage ids/labels are HubSpot-
+        // controlled data rendered into an authenticated admin page.
+        const o = document.createElement('option');
+        o.value = value;
+        o.textContent = label;
+        return o;
+      }
+      function fill() {
+        const pipe = pipelines.find(function (p) { return p.id === sel.value; }) || pipelines[0];
+        if (!pipe) return;
+        targets.forEach(function (pair) {
+          const el = document.getElementById(pair[0]);
+          const want = (el.dataset.selected) || '';
+          el.replaceChildren(opt('', '— leave to HubSpot default —'), ...pipe.stages.map(function (s) {
+            return opt(s.id, s.label);
+          }));
+          if (want) el.value = want;
+        });
+      }
+      if (current.dataset) {
+        document.getElementById('stage_proposal').dataset.selected = current.dataset.proposal || '';
+        document.getElementById('stage_won').dataset.selected = current.dataset.won || '';
+        document.getElementById('stage_lost').dataset.selected = current.dataset.lost || '';
+      }
+      sel.addEventListener('change', fill);
+      fill();
+      targets.forEach(function (pair) {
+        const el = document.getElementById(pair[0]);
+        const want = el.dataset.selected;
+        if (want) el.value = want;
+      });
+    })();
+  </script>
+{% endblock %}

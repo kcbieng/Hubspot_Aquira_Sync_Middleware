@@ -230,13 +230,12 @@ def main() -> None:
     apply_db_overlay()
     settings = get_settings()
     from apscheduler.schedulers.background import BackgroundScheduler
-    from app.jobs.poll import PollJob, set_active_job
+    from app.jobs.poll import set_active_job
+    from app.jobs.setup import register_default_jobs
 
     scheduler = BackgroundScheduler(timezone=settings.timezone)
     scheduler.start()
-    poll_job = PollJob(scheduler)
-    poll_job.schedule(settings.sync_interval_minutes)
-    set_active_job(poll_job)
+    register_default_jobs(scheduler, settings)
     logger.info("HubQuira worker process ready (role=%s, poll every %s min)", _role(), settings.sync_interval_minutes)
     try:
         run_forever()

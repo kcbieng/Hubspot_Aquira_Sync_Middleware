@@ -1,4 +1,5 @@
 import json
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -6,7 +7,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.api.routes import aquira_owners, hubspot_owners, hubspot_teams, owner_map, team_map
 from app.auth import hash_password, verify_password
-from app.db.models import AppUser, DeadLetter, MatchRule, OwnerMap, TeamMap
+from app.db.models import AppUser, MatchRule, OwnerMap, TeamMap
 from app.db.repo import Repo
 from app.runtime import persist_settings
 from app.session import (
@@ -655,13 +656,139 @@ async def users_save(request: Request):
     return RedirectResponse(url="/ui/users", status_code=303)
 
 
-ENTITY_TO_SYNC = {
-    "deal": ["deals"],
-    "company": ["companies"],
-    "client": ["companies"],
-    "contact": ["contacts"],
-    "revenue_period": ["revenue"],
+STAGE_AUTODETECT = {
+    "proposal": ("proposal", "prospect", "pitch", "present", "quote", "sent"),
+    "won": ("won", "closed won", "booked", "won - media"),
+    "lost": ("lost", "closed lost", "no sale", "canceled", "cancelled"),
 }
+
+
+def _suggest_stage(stages: list[dict], tokens: tuple[str, ...]) -> str:
+    for stage in stages:
+        label = str(stage.get("label") or "").strip().lower()
+        if any(token in label for token in tokens):
+            return str(stage["id"])
+    return ""
+
+
+def _current_stage_map() -> dict[str, str]:
+    settings = get_settings()
+    return {
+        "pipeline": settings.hubspot_deal_pipeline,
+        "proposal": settings.hubspot_stage_proposal,
+        "won": settings.hubspot_stage_won,
+        "lost": settings.hubspot_stage_lost,
+    }
+
+
+def _load_pipelines_threadpool() -> list[dict]:
+    """deal_pipelines() opens a real 30 s-timeout socket. The POST handler is
+    async (it must `await request.form()`), so a synchronous call here would
+    freeze the web container's event loop — which also serves webhooks — for
+    the whole round trip. Hand it to Starlette's threadpool instead."""
+    from starlette.concurrency import run_in_threadpool
+
+    from app.hubspot.client import HubSpotClient
+
+    return run_in_threadpool(HubSpotClient().deal_pipelines)
+
+
+def _normalize_pipeline(value: Any) -> str:
+    # HubSpot's built-in pipeline id is literally "default"; storing it would
+    # make the mapping look "custom" and silence the legacy proposal-stage
+    # rescue for a portal that never needed one. Default means "leave blank".
+    text = str(value or "").strip()[:100]
+    return "" if text.lower() == "default" else text
+
+
+@router.get("/stages", response_class=HTMLResponse)
+def stages_page(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    pipelines: list[dict] = []
+    error = None
+    try:
+        from app.hubspot.client import HubSpotClient
+
+        pipelines = HubSpotClient().deal_pipelines()
+    except Exception as exc:
+        error = f"Could not load deal pipelines from HubSpot: {exc}"
+    return _page(request, "stages.html", {"pipelines": pipelines, "current": _current_stage_map(), "error": error})
+
+
+@router.post("/stages")
+async def stages_save(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    action = str(form.get("action") or "")
+    settings = get_settings()
+
+    # Both branches call HubSpot; abort-without-writing on failure so a
+    # transient error can never persist a blank mapping over a working one.
+    try:
+        pipelines = await _load_pipelines_threadpool()
+    except Exception as exc:
+        error = f"Could not load deal pipelines from HubSpot: {exc} — nothing was saved."
+        return _page(request, "stages.html", {"pipelines": [], "current": _current_stage_map(), "error": error})
+
+    if action == "autodetect":
+        pipeline_id = str(form.get("pipeline") or "").strip()
+        if not pipeline_id:
+            # The blank choice means the BUILT-in pipeline, not "whatever is
+            # first" — a portal with custom pipelines lists those first.
+            default_pipe = next((p for p in pipelines if str(p.get("id") or "").lower() == "default"), None)
+            pipeline_id = str((default_pipe or (pipelines[0] if pipelines else {})).get("id") or "") if (default_pipe or pipelines) else ""
+        stages = next((p.get("stages") or [] for p in pipelines if p.get("id") == pipeline_id), [])
+        if not stages:
+            error = "Autodetect found no stages on that pipeline — nothing was saved."
+            return _page(request, "stages.html", {"pipelines": pipelines, "current": _current_stage_map(), "error": error})
+        detected = {
+            "hubspot_deal_pipeline": _normalize_pipeline(pipeline_id),
+            "hubspot_stage_proposal": _suggest_stage(stages, STAGE_AUTODETECT["proposal"]),
+            "hubspot_stage_won": _suggest_stage(stages, STAGE_AUTODETECT["won"]),
+            "hubspot_stage_lost": _suggest_stage(stages, STAGE_AUTODETECT["lost"]),
+        }
+        # Autodetect may only IMPROVE the mapping: a token whose label matches
+        # nothing keeps whatever the operator already had, so a partial match
+        # can never blank a working three-way map into the broken hybrid.
+        proposed: dict[str, str] = {}
+        for key, value in detected.items():
+            if value or not str(getattr(settings, key, "") or "").strip():
+                proposed[key] = value
+        persist_settings(proposed)
+        return RedirectResponse(url="/ui/stages", status_code=303)
+
+    pipeline = _normalize_pipeline(form.get("pipeline"))
+    proposal = str(form.get("stage_proposal") or "").strip()[:100]
+    won = str(form.get("stage_won") or "").strip()[:100]
+    lost = str(form.get("stage_lost") or "").strip()[:100]
+    chosen_pipeline = pipeline or "default"
+    valid_stage_ids = {s.get("id") for p in pipelines if str(p.get("id")) == chosen_pipeline for s in (p.get("stages") or [])}
+    # A custom pipeline has no built-in proposal/closedwon/closedlost, so a
+    # partial map there writes tokens HubSpot rejects. It is a valid choice to
+    # map NOTHING (stay fully legacy) or EVERYTHING — not some of it.
+    mapped_any = bool(proposal or won or lost)
+    if chosen_pipeline != "default" and mapped_any and not (proposal and won and lost):
+        error = "Custom pipelines need all three stages mapped (or none). Nothing was saved."
+        return _page(request, "stages.html", {"pipelines": pipelines, "current": _current_stage_map(), "error": error})
+    # Stage ids must belong to the selected pipeline — an id that leaks in
+    # from another pipeline (or stale settings) 400s every write.
+    for stage_id in (proposal, won, lost):
+        if stage_id and valid_stage_ids and stage_id not in valid_stage_ids:
+            error = f"Stage id {stage_id} is not on pipeline {chosen_pipeline}. Nothing was saved."
+            return _page(request, "stages.html", {"pipelines": pipelines, "current": _current_stage_map(), "error": error})
+    persist_settings(
+        {
+            "hubspot_deal_pipeline": pipeline,
+            "hubspot_stage_proposal": proposal,
+            "hubspot_stage_won": won,
+            "hubspot_stage_lost": lost,
+        }
+    )
+    return RedirectResponse(url="/ui/stages", status_code=303)
 
 
 @router.get("/deadletters", response_class=HTMLResponse)
@@ -671,7 +798,15 @@ def deadletters_page(request: Request):
         return redirect
     repo = Repo()
     try:
-        return _page(request, "deadletters.html", {"rows": repo.list_dead_letters()})
+        return _page(
+            request,
+            "deadletters.html",
+            {
+                "rows": repo.list_dead_letters(("open", "frozen")),
+                "resolved_rows": repo.list_dead_letters(("resolved",), limit=8),
+                "counts": repo.dead_letter_counts(),
+            },
+        )
     finally:
         try:
             repo.close()
@@ -692,17 +827,18 @@ async def deadletters_action(request: Request):
     except (TypeError, ValueError):
         row_id = 0
     try:
-        row = repo.session.get(DeadLetter, row_id) if row_id else None
-        if row is not None and action == "retry":
-            from app.sync.orchestrator import SyncContext
-            from app.sync.worker import enqueue_sync
-
-            entities = ENTITY_TO_SYNC.get(str(row.entity_type or ""), ["deals", "companies", "contacts"])
-            enqueue_sync(
-                SyncContext(trigger="manual", whatif=False, entities=entities, aquira_id=row.aquira_id or None)
+        if action == "retry" and row_id:
+            # Nudges the row to the front of the scheduled reconciliation queue;
+            # each retry is a fresh targeted sync, so it uses current settings/logic.
+            repo.retry_dead_letter_now(row_id)
+        elif action == "resolved" and row_id:
+            identity = session_identity(request) or {}
+            repo.resolve_dead_letter_by_id(
+                row_id, f"marked resolved by {identity.get('email') or 'admin'}"
             )
-            repo.bump_dead_letter(row_id)
-        elif row is not None and action == "delete":
+        elif action == "unfreeze-all":
+            repo.unfreeze_dead_letters()
+        elif action == "delete" and row_id:
             repo.delete_dead_letter(row_id)
     except Exception:
         import logging

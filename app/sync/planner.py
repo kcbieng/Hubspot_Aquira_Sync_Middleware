@@ -217,7 +217,7 @@ def contact_properties(contact: dict[str, Any]) -> dict[str, Any]:
     return props
 
 
-def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None) -> dict[str, Any]:
+def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None, stage_map: dict[str, str] | None = None) -> dict[str, Any]:
     if contract.get("allocated_total") is None:
         attach_revenue_summary(contract)
     description = str(contract.get("Description") or "").strip()
@@ -232,11 +232,17 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
     # flips IsActiveFlag back and the transition-writes rule re-opens it.
     dead_proposal = contract.get("IsActive") is False and is_proposal
     stage = "closedlost" if cancelled or dead_proposal else "closedwon" if is_contract else "proposal"
+    pipeline = "default"
+    if stage_map:
+        # Custom pipelines give stages opaque GUID ids; the semantic
+        # closedwon/closedlost/proposal tokens only exist in the default one.
+        pipeline = str(stage_map.get("pipeline") or "default")
+        stage = str(stage_map.get(stage) or stage)
     props = {
         "dealname": f"{contract.get('ContractCD')} — {label}",
         "amount": contract.get("TotalValue") or 0,
         "closedate": contract.get("EndDate") or "",
-        "pipeline": "default",
+        "pipeline": pipeline,
         "dealstage": stage,
         "aquira_id": str(contract.get("ID")),
         "aquira_contract_cd": contract.get("ContractCD") or "",
@@ -410,6 +416,7 @@ def plan_deals(
     owner_by_aquira_user: dict[str, str],
     client_name_by_id: dict[str, str] | None = None,
     snapshots: dict[str, dict[str, Any]] | None = None,
+    stage_map: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     names = client_name_by_id or {}
@@ -421,7 +428,7 @@ def plan_deals(
             continue
         attach_revenue_summary(contract)
         advertiser_name = names.get(str(contract.get("AdvertiserID")))
-        props = deal_properties(contract, advertiser_name)
+        props = deal_properties(contract, advertiser_name, stage_map)
         owner_id = None
         if contract.get("SalesRepID"):
             owner_id = owner_by_aquira_user.get(str(contract.get("SalesRepID")))
