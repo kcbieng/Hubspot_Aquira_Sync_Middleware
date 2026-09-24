@@ -51,6 +51,9 @@ async def lifespan(_: FastAPI):
         poll_job = PollJob(scheduler)
         poll_job.schedule(settings.sync_interval_minutes)
         set_active_job(poll_job)
+        from app.notify import run_match_digest
+
+        scheduler.add_job(run_match_digest, "cron", hour=7, minute=5, replace_existing=True, id="match_digest")
     try:
         yield
     finally:

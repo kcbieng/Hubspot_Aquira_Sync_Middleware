@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% macro cond_row(cond, aquira_fields, hubspot_fields, modes) %}
+  <div class="row g-2 my-1">
+    <div class="col-md-4">
+      <select class="form-select form-select-sm" name="cond_aquira">
+        <option value="">— Aquira field —</option>
+        {% for f in aquira_fields %}
+          <option value="{{ f.name }}" {% if cond and cond.aquira_field == f.name %}selected{% endif %}>{{ f.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4">
+      <select class="form-select form-select-sm" name="cond_hubspot">
+        <option value="">— HubSpot property —</option>
+        {% for f in hubspot_fields %}
+          <option value="{{ f.name }}" {% if cond and cond.hubspot_field == f.name %}selected{% endif %}>{{ f.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-4">
+      <select class="form-select form-select-sm" name="cond_mode">
+        <option value="">— how to compare —</option>
+        {% for m in modes %}
+          <option value="{{ m.name }}" {% if cond and cond.mode == m.name %}selected{% endif %}>{{ m.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+{% endmacro %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Dedupe</div>
+        <h2 class="mb-0">Company &amp; contact matching rules</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      Sales creates leads in HubSpot <strong>before</strong> Aquira exists; these rules tell the sync how to
+      recognise them when the real record arrives, instead of creating a duplicate. Rules run
+      <strong>top to bottom and the first rule that matches decides the outcome</strong> — put the strongest,
+      most specific rules first and use <strong>▲ ▼</strong> to reorder. Within one rule, <em>every</em> listed
+      field pair must match. <strong>Auto-link</strong> binds the records (writes <code>aquira_id</code>);
+      <strong>Suggest</strong> lists the pair in each sync run for a human, who confirms by setting the
+      HubSpot record&rsquo;s <em>Aquira ID</em> property. A record already linked to another Aquira entity is
+      never re-matched, and one HubSpot record can take only one. If a rule list is empty the built-in
+      domain/name heuristic applies.
+    </p>
+  </div>
+
+  {% for et, label in [("company", "Companies"), ("contact", "Contacts")] %}
+    <div class="panel-card p-4 p-md-5 mb-4">
+      <h3 class="mb-3">{{ label }}</h3>
+
+      {% for rule in rules_by_entity[et] %}
+        <form method="post" action="/ui/matching" class="border rounded p-3 mb-3">
+          <input type="hidden" name="rule_id" value="{{ rule.id }}">
+          <div class="row g-2 align-items-center mb-2">
+            <div class="col-auto fw-bold">{{ loop.index }}</div>
+            <div class="col-md-5">
+              <input class="form-control form-control-sm" name="name" value="{{ rule.name }}" aria-label="Rule name">
+            </div>
+            <div class="col-md-3">
+              <select class="form-select form-select-sm" name="on_match">
+                <option value="link" {% if rule.on_match == 'link' %}selected{% endif %}>On match: auto-link</option>
+                <option value="suggest" {% if rule.on_match == 'suggest' %}selected{% endif %}>On match: suggest only</option>
+              </select>
+            </div>
+            <div class="col-md-2">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" id="en_{{ rule.id }}" name="enabled_{{ rule.id }}" {% if rule.enabled %}checked{% endif %}>
+                <label class="form-check-label small" for="en_{{ rule.id }}">Enabled</label>
+              </div>
+            </div>
+            <div class="col-md-2 text-md-end">
+              <button class="btn btn-primary btn-sm" type="submit" name="action" value="update">Save</button>
+              <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="up" title="Move up">▲</button>
+              <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="down" title="Move down">▼</button>
+              <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete"
+                      onclick="return confirm('Delete rule &lsquo;{{ rule.name }}&rsquo;?')">Delete</button>
+            </div>
+          </div>
+          <div class="small text-muted mb-1">All field pairs below must match:</div>
+          {% for cond in conditions_by_id[rule.id] %}
+            {{ cond_row(cond, aquira_fields[et], hubspot_fields[et], modes) }}
+          {% endfor %}
+          {{ cond_row(none, aquira_fields[et], hubspot_fields[et], modes) }}
+          {% if not conditions_by_id[rule.id] %}
+            {{ cond_row(none, aquira_fields[et], hubspot_fields[et], modes) }}
+          {% endif %}
+        </form>
+      {% else %}
+        <p class="text-muted">No {{ et }} rules — the built-in heuristic is in use. Add rules to take control.</p>
+      {% endfor %}
+
+      <form method="post" action="/ui/matching" class="border border-dashed rounded p-3 bg-light">
+        <input type="hidden" name="entity_type" value="{{ et }}">
+        <div class="fw-bold mb-2">Add a {{ et }} rule</div>
+        <div class="row g-2 mb-2">
+          <div class="col-md-5">
+            <input class="form-control form-control-sm" name="name" placeholder="Rule name, e.g. Business name and phone">
+          </div>
+          <div class="col-md-3">
+            <select class="form-select form-select-sm" name="on_match">
+              <option value="link">On match: auto-link</option>
+              <option value="suggest">On match: suggest only</option>
+            </select>
+          </div>
+        </div>
+        {{ cond_row(none, aquira_fields[et], hubspot_fields[et], modes) }}
+        {{ cond_row(none, aquira_fields[et], hubspot_fields[et], modes) }}
+        <button class="btn btn-primary btn-sm mt-2" type="submit" name="action" value="create">Add rule (goes last in order)</button>
+      </form>
+    </div>
+  {% endfor %}
+{% endblock %}

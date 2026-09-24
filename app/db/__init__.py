@@ -39,6 +39,14 @@ def _ensure_columns() -> None:
         existing = {col["name"] for col in inspector.get_columns("owner_map")}
         if "aquira_sales_rep_id" not in existing:
             statements.append("ALTER TABLE owner_map ADD COLUMN aquira_sales_rep_id VARCHAR(100)")
+    if "app_user" in inspector.get_table_names():
+        existing = {col["name"] for col in inspector.get_columns("app_user")}
+        if "role_locked" not in existing:
+            statements.append("ALTER TABLE app_user ADD COLUMN role_locked BOOLEAN DEFAULT 0")
+        if "disabled" not in existing:
+            statements.append("ALTER TABLE app_user ADD COLUMN disabled BOOLEAN DEFAULT 0")
+        if "sso_subject" not in existing:
+            statements.append("ALTER TABLE app_user ADD COLUMN sso_subject VARCHAR(255)")
     if not statements:
         return
     with engine.begin() as conn:

@@ -4,7 +4,13 @@ from datetime import datetime, timedelta
 from typing import Any
 
 
-STATUS_LABELS = {0: "Draft", 1: "Proposal", 2: "Booked", 3: "Cancelled"}
+STATUS_LABELS = {0: "Draft", 1: "Booked", 2: "Proposal — Unsubmitted", 3: "Proposal — Submitted"}
+
+# Aquira serialises an untyped AttributeDataModel Value as a bare {} and leaves
+# unwrapped FieldValue dicts behind when Access/Label block the unwrap. str() of
+# those is the truthy 2-character "{}" that then beats every `or` fallback, so it
+# must never be treated as a value.
+_RESIDUE_STRINGS = {"{}", "[]", "()", "set()", "none", "null", "nan", "nat"}
 
 
 def unwrap(value: Any) -> Any:
@@ -35,11 +41,16 @@ def as_array(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def _clean_scalar(value: Any) -> str:
+    text = str(value).strip()
+    return "" if text.lower() in _RESIDUE_STRINGS else text
+
+
 def as_str(value: Any, fallback: str = "") -> str:
     inner = unwrap(value)
-    if inner is None:
+    if inner is None or isinstance(inner, (dict, list, tuple, set)):
         return fallback
-    return str(inner)
+    return _clean_scalar(inner) or fallback
 
 
 def as_num(value: Any, fallback: float | int = 0) -> float | int:
@@ -51,6 +62,8 @@ def as_num(value: Any, fallback: float | int = 0) -> float | int:
     try:
         number = float(inner)
     except (TypeError, ValueError):
+        return fallback
+    if not (number == number and number not in (float("inf"), float("-inf"))):
         return fallback
     if number.is_integer():
         return int(number)
@@ -206,6 +219,20 @@ def _sales_teams(entity: dict[str, Any]) -> list[str]:
             names.extend(_ref_names(row.get("SalesTeam") or row.get("SalesTeamItem")))
             names.extend(_ref_names(as_record(unwrap(row.get("SalesRepID"))).get("SalesTeam")))
     return list(dict.fromkeys(name for name in names if name))
+
+
+def _status_name(value: Any) -> str:
+    """Text label of a Status field, when the API bothers to send one.
+    Handles plain dicts ({"ID":1,"Name":"Proposal"}) and FieldValue wrapping."""
+    inner = unwrap(value)
+    if isinstance(inner, dict):
+        for key in ("Value", "Status"):
+            nested = inner.get(key)
+            if isinstance(nested, dict):
+                inner = nested
+                break
+        return as_str(inner.get("Name") or inner.get("StatusName") or inner.get("Label")).strip()
+    return ""
 
 
 def _status_int(value: Any) -> int | None:
@@ -657,15 +684,39 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
     is_contract = as_bool(entity.get("IsContract"))
     is_proposal = as_bool(entity.get("IsProposal"))
     status_code = _status_int(entity.get("Status"))
-    if not is_contract and not is_proposal and not cancelled and status_code is not None:
-        if status_code == 3:
+    status_name = _status_name(entity.get("Status"))
+    if not is_contract and not is_proposal and not cancelled:
+        # The API's own text label, when present, outranks any code inference.
+        lowered = status_name.lower()
+        if "cancel" in lowered or "delet" in lowered:
             cancelled = True
-        elif status_code == 2:
+        elif "contract" in lowered or "book" in lowered:
             is_contract = True
-        elif status_code in (0, 1):
+        elif "propos" in lowered or "draft" in lowered or "quote" in lowered:
             is_proposal = True
+        elif status_code is not None:
+            # Tenant-verified 2026-09-18 against 12 UI-labeled records: this
+            # Aquira's numeric vocabulary is 1=contract, 2=proposal-unsubmitted,
+            # 3=proposal-submitted — NOT the generic Draft/Proposal/Booked/
+            # Cancelled order the old code assumed, which rendered booked
+            # contracts as open proposals and live submitted proposals as
+            # cancelled. Active/Inactive is a separate dimension (IsActiveFlag).
+            is_contract = status_code == 1
+            is_proposal = status_code in (2, 3)
     if not is_proposal:
         is_proposal = not is_contract and not cancelled
+    # Active/Inactive is a dimension orthogonal to Status: /Contract/Search
+    # rows carry IsActiveFlag (UI-verified 2026-09-18: False on every
+    # "Inactive - ..." record, True on every "Active - ..."), while
+    # /Contract/Load does NOT send the flag at all — hence the None default:
+    # "unknown", never silently True, or merge_contract would revive
+    # deactivated records from thin Load payloads.
+    active_val = unwrap(entity.get("IsActiveFlag"))
+    if active_val is None or active_val == "":
+        active_val = unwrap(entity.get("Active"))
+    if active_val is None or active_val == "":
+        active_val = unwrap(entity.get("IsActive"))
+    is_active = None if active_val is None or active_val == "" else as_bool(active_val)
     lines = spot_lines if spot_lines is not None else normalize_spot_lines(payload)
     charge_lines = [line for line in lines if line.get("line_kind") == "charge"]
     if not charge_lines:
@@ -729,13 +780,17 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         )
     )
     if cancelled:
-        status_label = "Cancelled"
+        status_label = status_name or "Cancelled"
     elif is_contract:
-        status_label = "Booked"
+        status_label = status_name or "Booked"
     elif is_proposal:
-        status_label = "Proposal"
+        status_label = status_name or STATUS_LABELS.get(
+            status_code if status_code in (0, 2, 3) else -1, "Proposal"
+        )
     else:
-        status_label = STATUS_LABELS.get(status_code or -1, as_str(entity.get("Status")) or "Proposal")
+        status_label = status_name or STATUS_LABELS.get(status_code or -1, as_str(entity.get("Status")) or "Proposal")
+    if is_active is False and "(Inactive)" not in status_label:
+        status_label = f"{status_label} (Inactive)"
     return {
         "ID": int(ident),
         "ContractCD": contract_cd,
@@ -744,6 +799,7 @@ def normalize_contract(payload: Any, spot_lines: list[dict[str, Any]] | None = N
         "IsProposal": is_proposal,
         "IsContract": is_contract,
         "Cancelled": cancelled,
+        "IsActive": is_active,
         "TotalValue": total,
         "StartDate": start,
         "EndDate": end,
@@ -852,6 +908,12 @@ def merge_contract(summary: dict[str, Any] | None, loaded: dict[str, Any] | None
     for key, value in loaded.items():
         if key in {"IsContract", "IsProposal", "Cancelled"}:
             merged[key] = value
+            continue
+        if key == "IsActive":
+            # Load never sends IsActiveFlag; None means "this payload is not
+            # an authority on active-ness", so the Search row's answer stands.
+            if value is not None:
+                merged[key] = value
             continue
         if key == "lines":
             if value:

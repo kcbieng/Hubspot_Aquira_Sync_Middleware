@@ -15,6 +15,9 @@ SECRET_KEYS = {
     "hubspot_client_secret",
     "aquira_webhook_secret",
     "ui_password",
+    "smtp_password",
+    "oidc_client_secret",
+    "teams_webhook_url",
 }
 
 BOOL_KEYS = {
@@ -23,9 +26,11 @@ BOOL_KEYS = {
     "sync_writeback",
     "sync_create_aquira_client",
     "bootstrap_hubspot",
+    "match_digest_enabled",
+    "sso_enabled",
 }
 
-INT_KEYS = {"sync_interval_minutes"}
+INT_KEYS = {"sync_interval_minutes", "smtp_port"}
 
 # Process identity — never take these from the settings table or the UI can pin the
 # HTTP container to role=all and run catalog pulls on the middleware thread.
@@ -57,6 +62,11 @@ def decrypt_value(value: str | None) -> str | None:
         return None
     fernet = _fernet()
     if fernet is None:
+        if looks_encrypted(value):
+            # No cryptography installed: a token stored by another container must
+            # never pass through as a password. Fail closed like a bad token does.
+            logger.error("Stored value looks Fernet-encrypted but cryptography is unavailable.")
+            return None
         return value
     try:
         return fernet.decrypt(value.encode("utf-8")).decode("utf-8")

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from app.aquira.client import AquiraSessionClient
 from app.settings import get_settings

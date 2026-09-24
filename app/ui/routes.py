@@ -5,15 +5,78 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.api.routes import aquira_owners, hubspot_owners, hubspot_teams, owner_map, team_map
-from app.db.models import OwnerMap, TeamMap
+from app.auth import hash_password, verify_password
+from app.db.models import AppUser, DeadLetter, MatchRule, OwnerMap, TeamMap
 from app.db.repo import Repo
 from app.runtime import persist_settings
-from app.session import is_logged_in, set_session
+from app.session import (
+    clear_session,
+    cookie_params,
+    is_logged_in,
+    session_identity,
+    set_session,
+    set_user_session,
+)
 from app.settings import get_settings
+from app import sso as sso_module
 from app.version import REVISION
 
 router = APIRouter(prefix="/ui", tags=["ui"])
 templates = Jinja2Templates(directory="app/ui/templates")
+
+MATCH_MODE_CHOICES = [
+    {"name": "domain", "label": "Website domain (normalized)"},
+    {"name": "normalized", "label": "Name (legal suffixes stripped)"},
+    {"name": "exact", "label": "Exact text (case-insensitive)"},
+    {"name": "email", "label": "Email"},
+    {"name": "phone", "label": "Phone (last 10 digits)"},
+    {"name": "contains", "label": "Contains (either side)"},
+]
+MATCH_AQUIRA_FIELDS = {
+    "company": [
+        {"name": "Name", "label": "Name"},
+        {"name": "LongName", "label": "Long name"},
+        {"name": "ShortName", "label": "Short name"},
+        {"name": "ClientCD", "label": "Client CD (UI number)"},
+        {"name": "Website", "label": "Website"},
+        {"name": "Email", "label": "Email"},
+        {"name": "Phone", "label": "Phone"},
+        {"name": "PhysicalAddress", "label": "Street"},
+        {"name": "City", "label": "City"},
+        {"name": "State", "label": "State"},
+    ],
+    "contact": [
+        {"name": "FirstName", "label": "First name"},
+        {"name": "LastName", "label": "Last name"},
+        {"name": "Email", "label": "Email"},
+        {"name": "Phone", "label": "Phone"},
+        {"name": "ClientID", "label": "Aquira client ID"},
+    ],
+}
+_DEFAULT_HUBSPOT_FIELDS = {
+    "company": ["name", "domain", "website", "phone", "city", "state", "address"],
+    "contact": ["firstname", "lastname", "email", "phone"],
+}
+
+
+def _hubspot_field_choices(entity_type: str) -> list[dict[str, str]]:
+    """Live property list from the portal — the dropdown shows the fields the
+    matching can actually read; offline/unconfigured falls back to core."""
+    object_type = "companies" if entity_type == "company" else "contacts"
+    try:
+        from app.hubspot.client import HubSpotClient
+
+        rows = HubSpotClient().get_properties(object_type).get("results") or []
+        out = [
+            {"name": str(r.get("name")), "label": f"{r.get('label') or r.get('name')} ({r.get('name')})"}
+            for r in rows
+            if r.get("name")
+        ]
+        if out:
+            return sorted(out, key=lambda c: c["name"].lower())
+    except Exception:
+        pass
+    return [{"name": n, "label": n} for n in _DEFAULT_HUBSPOT_FIELDS[entity_type]]
 
 
 def _require_login(request: Request):
@@ -22,9 +85,24 @@ def _require_login(request: Request):
     return None
 
 
+def _require_admin(request: Request):
+    redirect = _require_login(request)
+    if redirect:
+        return redirect
+    if str((session_identity(request) or {}).get("role") or "") != "admin":
+        return HTMLResponse(
+            "<h2>403 — Admin access required</h2><p><a href='/ui/matches'>Go to your match reviews</a></p>",
+            status_code=403,
+        )
+    return None
+
+
 def _page(request: Request, name: str, context: dict):
     context.setdefault("settings", get_settings())
     context.setdefault("revision", REVISION)
+    identity = session_identity(request) or {}
+    context.setdefault("role", identity.get("role") or "")
+    context.setdefault("user_email", identity.get("email") or "")
     return templates.TemplateResponse(request, name, context)
 
 
@@ -56,9 +134,66 @@ def _latest_sync_output() -> dict[str, object]:
     return {"run": run, "items": items}
 
 
+SSO_STATE_COOKIE = "sso_state"
+
+
+def _sso_error(request: Request, exc: Exception) -> HTMLResponse:
+    return HTMLResponse(
+        "<h2>Single sign-on failed</h2>"
+        f"<p>{str(exc)[:300]}</p>"
+        "<p><a href='/ui/login'>Back to login</a> (local admin sign-in always works).</p>",
+        status_code=403,
+    )
+
+
+@router.get("/sso")
+def sso_start(request: Request):
+    identity = session_identity(request)
+    if identity:
+        return RedirectResponse(url="/ui", status_code=303)
+    if not sso_module.sso_ready():
+        return RedirectResponse(url="/ui/login", status_code=303)
+    try:
+        url, cookie = sso_module.begin_login()
+    except sso_module.SsoError as exc:
+        return _sso_error(request, exc)
+    response = RedirectResponse(url, status_code=302)
+    params = cookie_params()
+    response.set_cookie(
+        SSO_STATE_COOKIE, cookie, httponly=True, samesite="lax",
+        secure=bool(params.get("secure")), max_age=sso_module.STATE_TTL_SECONDS, path="/",
+    )
+    return response
+
+
+@router.get("/sso/callback")
+def sso_callback(request: Request, code: str = "", state: str = ""):
+    cookie = request.cookies.get(SSO_STATE_COOKIE) or ""
+    try:
+        asserted = sso_module.complete_login(code, state, cookie)
+    except sso_module.SsoError as exc:
+        return _sso_error(request, exc)
+    repo = Repo()
+    try:
+        user, allowed = repo.provision_sso_user(
+            asserted["email"], asserted["name"], asserted["role"], asserted["subject"]
+        )
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+    if not allowed:
+        return _sso_error(request, RuntimeError(f"account {asserted['email']} is disabled in HubQuira"))
+    response = RedirectResponse(url="/ui", status_code=303)
+    set_user_session(response, asserted["email"], asserted["role"])
+    response.delete_cookie(SSO_STATE_COOKIE, path="/")
+    return response
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return _page(request, "login.html", {"error": None})
+    return _page(request, "login.html", {"error": None, "sso_available": sso_module.sso_ready()})
 
 
 @router.post("/login")
@@ -71,7 +206,22 @@ async def login_submit(request: Request):
         response = RedirectResponse(url="/ui", status_code=303)
         set_session(response)
         return response
-    return _page(request, "login.html", {"error": "Invalid credentials"})
+    repo = Repo()
+    try:
+        user = repo.get_user(username)
+        # copy what the redirect needs — the session closes below and would
+        # expire the ORM instance before the attribute reads after it
+        identity = (user.email, user.role, user.password_hash) if user is not None else None
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+    if identity and identity[2] and verify_password(password, identity[2]):
+        response = RedirectResponse(url="/ui/matches", status_code=303)
+        set_user_session(response, identity[0], identity[1])
+        return response
+    return _page(request, "login.html", {"error": "Invalid credentials", "sso_available": sso_module.sso_ready()})
 
 
 @router.get("", response_class=HTMLResponse)
@@ -101,7 +251,7 @@ def dashboard(request: Request):
 
 @router.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
     return _page(request, "settings.html", {"error": None, "notice": None})
@@ -109,7 +259,7 @@ def settings_page(request: Request):
 
 @router.post("/settings")
 async def update_settings(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
 
@@ -131,6 +281,19 @@ async def update_settings(request: Request):
             "sync_create_aquira_client": str(form.get("sync_create_aquira_client", "false")).lower() in {"1", "true", "on", "yes"},
             "bootstrap_hubspot": str(form.get("bootstrap_hubspot", "false")).lower() in {"1", "true", "on", "yes"},
             "aquira_team_attribute": form.get("aquira_team_attribute") or "HubSpot Team",
+            "smtp_host": form.get("smtp_host"),
+            "smtp_port": form.get("smtp_port"),
+            "smtp_user": form.get("smtp_user"),
+            "smtp_password": form.get("smtp_password"),
+            "smtp_from": form.get("smtp_from"),
+            "match_digest_enabled": str(form.get("match_digest_enabled", "false")).lower() in {"1", "true", "on", "yes"},
+            "sso_enabled": str(form.get("sso_enabled", "false")).lower() in {"1", "true", "on", "yes"},
+            "oidc_issuer": form.get("oidc_issuer"),
+            "oidc_client_id": form.get("oidc_client_id"),
+            "oidc_client_secret": form.get("oidc_client_secret"),
+            "sso_admin_group": form.get("sso_admin_group"),
+            "sso_sales_group": form.get("sso_sales_group"),
+            "teams_webhook_url": form.get("teams_webhook_url"),
         }
         try:
             payload["sync_interval_minutes"] = int(payload["sync_interval_minutes"] or 30)
@@ -151,7 +314,7 @@ async def update_settings(request: Request):
 
 @router.get("/owners", response_class=HTMLResponse)
 def owners_page(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
     repo = Repo()
@@ -175,7 +338,7 @@ def owners_page(request: Request):
 
 @router.post("/owners")
 async def owners_save(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
     form = await request.form()
@@ -204,7 +367,7 @@ async def owners_save(request: Request):
 
 @router.get("/teams", response_class=HTMLResponse)
 def teams_page(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
     repo = Repo()
@@ -229,7 +392,7 @@ def teams_page(request: Request):
 
 @router.post("/teams")
 async def teams_save(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
     form = await request.form()
@@ -261,6 +424,99 @@ async def teams_save(request: Request):
     return RedirectResponse(url="/ui/teams", status_code=303)
 
 
+def _rule_conditions(row) -> list[dict[str, str]]:
+    try:
+        conditions = json.loads(row.conditions_json or "[]")
+    except (TypeError, ValueError):
+        conditions = []
+    return [c for c in conditions if isinstance(c, dict)]
+
+
+@router.get("/matching", response_class=HTMLResponse)
+def matching_page(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    repo = Repo()
+    repo.ensure_default_match_rules()
+    rules = repo.list_match_rules()
+    return _page(
+        request,
+        "matching.html",
+        {
+            "rules_by_entity": {
+                "company": [r for r in rules if r.entity_type == "company"],
+                "contact": [r for r in rules if r.entity_type == "contact"],
+            },
+            "conditions_by_id": {r.id: _rule_conditions(r) for r in rules},
+            "aquira_fields": MATCH_AQUIRA_FIELDS,
+            "hubspot_fields": {et: _hubspot_field_choices(et) for et in ("company", "contact")},
+            "modes": MATCH_MODE_CHOICES,
+        },
+    )
+
+
+@router.post("/matching")
+async def matching_save(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    repo = Repo()
+    action = str(form.get("action") or "")
+
+    def conditions_from() -> list[dict[str, str]]:
+        aq = form.getlist("cond_aquira")
+        hs = form.getlist("cond_hubspot")
+        md = form.getlist("cond_mode")
+        conditions = []
+        for a, b, m in zip(aq, hs, md):
+            a, b, m = str(a or "").strip(), str(b or "").strip(), str(m or "").strip()
+            if a and b and m:
+                conditions.append({"aquira_field": a, "hubspot_field": b, "mode": m})
+        return conditions
+
+    def rule_id() -> int | None:
+        try:
+            return int(form.get("rule_id"))
+        except (TypeError, ValueError):
+            return None
+
+    if action == "create":
+        entity_type = str(form.get("entity_type") or "company")
+        if entity_type not in {"company", "contact"}:
+            entity_type = "company"
+        conditions = conditions_from()
+        if conditions:
+            repo.create_match_rule(
+                entity_type,
+                str(form.get("name") or "New rule").strip()[:120] or "New rule",
+                conditions,
+                str(form.get("on_match") or "link"),
+            )
+        return RedirectResponse(url="/ui/matching", status_code=303)
+
+    rid = rule_id()
+    if rid is not None:
+        if action == "delete":
+            repo.delete_match_rule(rid)
+        elif action in {"up", "down"}:
+            repo.move_match_rule(rid, action)
+        elif action == "update":
+            conditions = conditions_from()
+            row = repo.session.get(MatchRule, rid)
+            if row is None:
+                return RedirectResponse(url="/ui/matching", status_code=303)
+            repo.update_match_rule(
+                rid,
+                name=str(form.get("name") or "").strip()[:120] or None,
+                conditions=conditions or None,  # an all-blank edit keeps the stored conditions
+                on_match=str(form.get("on_match") or "") or None,
+                enabled=bool(form.get(f"enabled_{rid}")),
+            )
+    return RedirectResponse(url="/ui/matching", status_code=303)
+
+
 @router.get("/runs", response_class=HTMLResponse)
 def runs_page(request: Request):
     redirect = _require_login(request)
@@ -268,6 +524,226 @@ def runs_page(request: Request):
         return redirect
     repo = Repo()
     return _page(request, "runs.html", {"runs": repo.list_runs(50)})
+
+
+def _suggestions_viewable(request: Request, repo: Repo) -> list:
+    identity = session_identity(request) or {}
+    rows = repo.list_suggestions(("pending",))
+    if identity.get("role") == "admin":
+        return list(rows)
+    email = str(identity.get("email") or "").lower()
+    return [r for r in rows if (r.assignee_email or "").lower() in {email, ""} or not r.assignee_email]
+
+
+@router.get("/matches", response_class=HTMLResponse)
+def matches_page(request: Request):
+    redirect = _require_login(request)
+    if redirect:
+        return redirect
+    repo = Repo()
+    identity = session_identity(request) or {}
+    try:
+        exclusions = repo.list_match_exclusions() if identity.get("role") == "admin" else []
+        return _page(
+            request,
+            "matches.html",
+            {
+                "suggestions": _suggestions_viewable(request, repo),
+                "exclusions": exclusions,
+                "is_admin": identity.get("role") == "admin",
+            },
+        )
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+
+
+@router.post("/matches")
+async def matches_action(request: Request):
+    redirect = _require_login(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    repo = Repo()
+    identity = session_identity(request) or {}
+    action = str(form.get("action") or "")
+    entity_type = str(form.get("entity_type") or "")
+    aquira_id = str(form.get("aquira_id") or "")
+    hubspot_id = str(form.get("hubspot_id") or "")
+    if entity_type not in {"company", "contact"} or not aquira_id or not hubspot_id:
+        return RedirectResponse(url="/ui/matches", status_code=303)
+    obj = "companies" if entity_type == "company" else "contacts"
+    try:
+        if action == "link":
+            from app.hubspot.client import HubSpotClient
+
+            HubSpotClient().upsert_crm(obj, {"aquira_id": aquira_id}, hubspot_id)
+            repo.set_suggestion_status(entity_type, aquira_id, hubspot_id, "linked")
+            repo.add_event("matches", "INFO", f"linked Aquira {aquira_id} to HubSpot {obj} {hubspot_id}",
+                           {"by": identity.get("email")})
+        elif action == "dismiss":
+            repo.add_match_exclusion(entity_type, aquira_id, hubspot_id, str(identity.get("email") or ""))
+            repo.set_suggestion_status(entity_type, aquira_id, hubspot_id, "dismissed")
+            repo.add_event("matches", "INFO", f"declared {obj} {hubspot_id} NOT a duplicate of Aquira {aquira_id}",
+                           {"by": identity.get("email")})
+        elif action == "remove-exclusion" and identity.get("role") == "admin":
+            repo.removal_match_exclusion(entity_type, aquira_id, hubspot_id)
+    except Exception as exc:
+        return _page(
+            request,
+            "matches.html",
+            {
+                "suggestions": _suggestions_viewable(request, repo),
+                "exclusions": repo.list_match_exclusions() if identity.get("role") == "admin" else [],
+                "is_admin": identity.get("role") == "admin",
+                "error": f"{action} failed: {exc}",
+            },
+        )
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+    return RedirectResponse(url="/ui/matches", status_code=303)
+
+
+@router.get("/users", response_class=HTMLResponse)
+def users_page(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    repo = Repo()
+    try:
+        return _page(request, "users.html", {"users": repo.list_users()})
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+
+
+@router.post("/users")
+async def users_save(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    repo = Repo()
+    action = str(form.get("action") or "")
+    try:
+        if action == "create":
+            email = str(form.get("email") or "").strip().lower()
+            password = str(form.get("password") or "")
+            if email and len(password) >= 8:
+                repo.upsert_user(email, str(form.get("name") or ""), str(form.get("role") or "sales"),
+                                 hash_password(password))
+        elif action == "reset":
+            email = str(form.get("email") or "").strip().lower()
+            password = str(form.get("password") or "")
+            user = repo.get_user(email) if email else None
+            if user is not None and len(password) >= 8:
+                repo.upsert_user(email, user.name, user.role, hash_password(password))
+        elif action == "delete":
+            repo.delete_user(str(form.get("email") or ""))
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+    return RedirectResponse(url="/ui/users", status_code=303)
+
+
+ENTITY_TO_SYNC = {
+    "deal": ["deals"],
+    "company": ["companies"],
+    "client": ["companies"],
+    "contact": ["contacts"],
+    "revenue_period": ["revenue"],
+}
+
+
+@router.get("/deadletters", response_class=HTMLResponse)
+def deadletters_page(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    repo = Repo()
+    try:
+        return _page(request, "deadletters.html", {"rows": repo.list_dead_letters()})
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+
+
+@router.post("/deadletters")
+async def deadletters_action(request: Request):
+    redirect = _require_admin(request)
+    if redirect:
+        return redirect
+    form = await request.form()
+    repo = Repo()
+    action = str(form.get("action") or "")
+    try:
+        row_id = int(form.get("row_id") or 0)
+    except (TypeError, ValueError):
+        row_id = 0
+    try:
+        row = repo.session.get(DeadLetter, row_id) if row_id else None
+        if row is not None and action == "retry":
+            from app.sync.orchestrator import SyncContext
+            from app.sync.worker import enqueue_sync
+
+            entities = ENTITY_TO_SYNC.get(str(row.entity_type or ""), ["deals", "companies", "contacts"])
+            enqueue_sync(
+                SyncContext(trigger="manual", whatif=False, entities=entities, aquira_id=row.aquira_id or None)
+            )
+            repo.bump_dead_letter(row_id)
+        elif row is not None and action == "delete":
+            repo.delete_dead_letter(row_id)
+    except Exception:
+        import logging
+
+        logging.getLogger(__name__).exception("dead-letter action %s failed", action)
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+    return RedirectResponse(url="/ui/deadletters", status_code=303)
+
+
+@router.get("/records", response_class=HTMLResponse)
+def records_page(request: Request, q: str = "", entity: str = ""):
+    """Record history lookup — "who changed what on deal X, and when?" —
+    straight from the per-run item audit already stored by every sync."""
+    redirect = _require_login(request)
+    if redirect:
+        return redirect
+    repo = Repo()
+    entries: list[dict[str, object]] = []
+    try:
+        for item, run in repo.search_history(q, entity or None):
+            diff = None
+            if item.diff_json:
+                try:
+                    diff = json.loads(item.diff_json)
+                except json.JSONDecodeError:
+                    diff = None
+            entries.append({"item": item, "run": run, "diff": diff})
+    finally:
+        try:
+            repo.close()
+        except Exception:
+            pass
+    return _page(
+        request,
+        "records.html",
+        {"q": q, "entity": entity, "entries": entries if (q or entity) else []},
+    )
 
 
 @router.get("/runs/{run_id}", response_class=HTMLResponse)
@@ -313,7 +789,7 @@ def _execute_sync(whatif: bool, trigger: str = "manual", aquira_id: str | None =
 
 @router.post("/sync/run")
 async def run_sync(request: Request):
-    redirect = _require_login(request)
+    redirect = _require_admin(request)
     if redirect:
         return redirect
     form = await request.form()

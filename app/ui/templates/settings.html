@@ -78,8 +78,11 @@
           </div>
           <div class="form-check form-switch">
             <input class="form-check-input" type="checkbox" id="sync_create_aquira_client" name="sync_create_aquira_client" {% if settings.sync_create_aquira_client %}checked{% endif %}>
-            <label class="form-check-label" for="sync_create_aquira_client">Create Aquira clients from new HubSpot companies</label>
-            <div class="form-text">Only for HubSpot companies that have no <code>aquira_id</code>.</div>
+            <label class="form-check-label" for="sync_create_aquira_client">Create Aquira clients when approved in HubSpot</label>
+            <div class="form-text">Master switch for HubQuira writing to Aquira&rsquo;s client master. A company
+              is created <strong>only</strong> when a human sets its <em>&ldquo;Create in Aquira as&hellip;&rdquo;</em>
+              dropdown on the company record: Account, Advertiser, or Advertiser&nbsp;+&nbsp;Account; blank means no.
+              Failed creations wait on the Dead letters page before being offered again.</div>
           </div>
         </div>
       </div>
@@ -94,6 +97,71 @@
           <input class="form-check-input" type="checkbox" id="sync_calls" name="sync_calls" {% if settings.sync_calls %}checked{% endif %}>
           <label class="form-check-label" for="sync_calls">Sync calls (phase 1.1)</label>
         </div>
+      </div>
+      <div class="col-12"><hr><h3 class="h6 mb-3">Email — match review digests</h3></div>
+      <div class="col-md-3">
+        <label class="form-label" for="smtp_host">SMTP host</label>
+        <input class="form-control" id="smtp_host" name="smtp_host" value="{{ settings.smtp_host }}" placeholder="e.g. smtp.office365.com" autocomplete="off">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="smtp_port">Port</label>
+        <input class="form-control" id="smtp_port" name="smtp_port" type="number" value="{{ settings.smtp_port }}">
+      </div>
+      <div class="col-md-3">
+        <label class="form-label" for="smtp_user">User</label>
+        <input class="form-control" id="smtp_user" name="smtp_user" value="{{ settings.smtp_user }}" autocomplete="off">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="smtp_password">Password</label>
+        <input class="form-control" id="smtp_password" name="smtp_password" type="password" placeholder="unchanged if blank" autocomplete="new-password">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="smtp_from">From address</label>
+        <input class="form-control" id="smtp_from" name="smtp_from" value="{{ settings.smtp_from }}" autocomplete="off">
+      </div>
+      <div class="col-md-4">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="match_digest_enabled" name="match_digest_enabled" {% if settings.match_digest_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="match_digest_enabled">Daily email digest of unresolved match suggestions</label>
+        </div>
+      </div>
+      <div class="col-12"><hr><h3 class="h6 mb-3">Single sign-on (Microsoft Entra ID, OIDC)</h3></div>
+      <div class="col-md-3">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="sso_enabled" name="sso_enabled" {% if settings.sso_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="sso_enabled">Enable "Sign in with Microsoft"</label>
+        </div>
+        <div class="form-text">The local admin and local users keep working as break-glass. Entra app
+          <strong>assignment</strong> (HQ-Sales / HQ-Admins groups assigned with <em>Assignment required</em>)
+          is the front gate; the group object ids below also map logins to roles.</div>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label" for="oidc_issuer">Issuer (tenant)</label>
+        <input class="form-control" id="oidc_issuer" name="oidc_issuer" value="{{ settings.oidc_issuer }}" placeholder="https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0" autocomplete="off">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="oidc_client_id">Application (client) ID</label>
+        <input class="form-control" id="oidc_client_id" name="oidc_client_id" value="{{ settings.oidc_client_id }}" autocomplete="off">
+      </div>
+      <div class="col-md-2">
+        <label class="form-label" for="oidc_client_secret">Secret value</label>
+        <input class="form-control" id="oidc_client_secret" name="oidc_client_secret" type="password" placeholder="unchanged if blank" autocomplete="new-password">
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="sso_sales_group">HQ-Sales group object id</label>
+        <input class="form-control" id="sso_sales_group" name="sso_sales_group" value="{{ settings.sso_sales_group }}" autocomplete="off">
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="sso_admin_group">HQ-Admins group object id</label>
+        <input class="form-control" id="sso_admin_group" name="sso_admin_group" value="{{ settings.sso_admin_group }}" autocomplete="off">
+      </div>
+      <div class="col-12"><hr><h3 class="h6 mb-3">Alerts — Microsoft Teams channel</h3></div>
+      <div class="col-md-9">
+        <label class="form-label" for="teams_webhook_url">Workflows webhook URL (post to channel)</label>
+        <input class="form-control" id="teams_webhook_url" name="teams_webhook_url" type="password" placeholder="unchanged if blank" autocomplete="off">
+        <div class="form-text">Notified on: failed runs, runs with item errors / dead letters, and suppressed revenue
+          pruning. Create it in Teams: channel &rsaquo; Connectors &rsaquo; Power Automate &rsaquo;
+          &ldquo;Post to a channel when a webhook request is received&rdquo;.</div>
       </div>
       <div class="col-12 d-flex flex-wrap gap-2">
         <button type="submit" class="btn btn-primary">Save</button>

@@ -10,6 +10,57 @@ from app.mapping.revenue import allocate_revenue, contract_revenue_input, summar
 IDENTITY_COMPANY_FIELDS = ("name", "phone", "domain", "address", "city", "state")
 IDENTITY_CONTACT_FIELDS = ("firstname", "lastname", "email", "phone")
 
+# str() residue that Aquira produces when a FieldValue cannot be unwrapped.
+BLANK_STRINGS = {"", "{}", "[]", "()", "none", "null", "nan", "nat"}
+
+# Money fields where a source value of 0 means "the read came back thin", not
+# "this is genuinely zero". Only enforced against a non-zero existing value.
+ZERO_IS_SUSPECT_FIELDS = {"amount"}
+
+
+def _is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, (dict, list, tuple, set)):
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in BLANK_STRINGS
+    return False
+
+
+def _suppress_blank_overwrite(
+    entity_type: str,
+    proposed: dict[str, Any],
+    existing: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Drop proposed values that would blank out data HubSpot already holds.
+
+    Aquira reads fail soft everywhere in this client — a 500 from
+    GetContractDetailAnalysis becomes an empty line set, and a thin search row
+    becomes a contract with no TotalValue. Without this guard the next PATCH
+    writes 0 or "" over real money and real identity, and because
+    plan_companies/plan_contacts let HubSpot win once a value is non-empty, a
+    blank written at create time is sticky forever.
+    """
+    current = (existing or {}).get("properties") or {}
+    kept: dict[str, Any] = {}
+    suppressed: list[str] = []
+    for key, value in proposed.items():
+        previous = current.get(key)
+        if previous is not None and not _is_blank(previous):
+            if _is_blank(value):
+                suppressed.append(key)
+                continue
+            if key in ZERO_IS_SUSPECT_FIELDS:
+                try:
+                    if float(value) == 0 and float(previous) != 0:
+                        suppressed.append(key)
+                        continue
+                except (TypeError, ValueError):
+                    pass
+        kept[key] = value
+    return kept, suppressed
+
 
 def _as_bool(value: Any) -> bool | None:
     if isinstance(value, bool):
@@ -61,6 +112,72 @@ def field_diff(old: dict[str, Any] | None, new: dict[str, Any] | None) -> list[d
     return changes
 
 
+# ---------------------------------------------------------------------------
+# Field ownership: reps work the pipeline board and identity records in
+# HubSpot; the sync may only re-push an owned field when the value Aquira
+# DERIVED last sync differs from what it derives now (a source transition),
+# never merely because a human moved it. Baselines come from EntitySnapshot:
+# the last-sync state of both sides. Without a snapshot for an existing
+# record, the human's current state is adopted silently — the first run
+# after this deploy never yanks anyone's board around.
+# ---------------------------------------------------------------------------
+HUMAN_MANAGED_DEAL_FIELDS = {"dealname", "pipeline", "dealstage"}
+
+COMPANY_IDENTITY_PAIRS = (("Name", "name"), ("Phone", "phone"), ("Website", "domain"), ("PhysicalAddress", "address"))
+CONTACT_IDENTITY_PAIRS = (("FirstName", "firstname"), ("LastName", "lastname"), ("Email", "email"), ("Phone", "phone"))
+
+
+def apply_deal_field_ownership(
+    derived: dict[str, Any],
+    existing: dict[str, Any] | None,
+    snapshot: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[str]]:
+    """Returns (props_to_write, preserved_fields)."""
+    if existing is None:
+        return dict(derived), []
+    last_aquira = (snapshot or {}).get("aquira") or {}
+    kept = dict(derived)
+    preserved: list[str] = []
+    for field in sorted(HUMAN_MANAGED_DEAL_FIELDS & set(derived)):
+        if snapshot is None or _same(last_aquira.get(field), derived.get(field)):
+            kept.pop(field, None)
+            preserved.append(field)
+    return kept, preserved
+
+
+def _three_way_fields(
+    hs_props: dict[str, Any],
+    aq_row: dict[str, Any],
+    snapshot: dict[str, Any] | None,
+    pairs: tuple[tuple[str, str], ...],
+) -> tuple[dict[str, Any], list[str]]:
+    """Per-field 3-way merge of a HubSpot-side value vs an Aquira-side value against
+    the last-sync baseline. Returns (fields_to_write_back, conflicts)."""
+    proposed: dict[str, Any] = {}
+    conflicts: list[str] = []
+    if snapshot is None:
+        # No baseline yet: keep the historical HubSpot-wins seeding so behavior
+        # only changes where we actually know what each side used to hold.
+        for aq_field, hs_field in pairs:
+            hs_now = str(hs_props.get(hs_field) or "").strip()
+            aq_now = str(aq_row.get(aq_field) or "").strip()
+            if hs_now and hs_now != aq_now:
+                proposed[aq_field] = hs_now
+        return proposed, conflicts
+    aq_then = snapshot.get("aquira") or {}
+    hs_then = snapshot.get("hubspot") or {}
+    for aq_field, hs_field in pairs:
+        aq_now = str(aq_row.get(aq_field) or "").strip()
+        hs_now = str(hs_props.get(hs_field) or "").strip()
+        aq_moved = not _same(aq_then.get(aq_field), aq_now)
+        hs_moved = not _same(hs_then.get(hs_field), hs_now)
+        if hs_moved and aq_moved and not _same(aq_now, hs_now):
+            conflicts.append(aq_field)
+        elif hs_moved and not aq_moved and hs_now:
+            proposed[aq_field] = hs_now
+    return proposed, conflicts
+
+
 def company_properties(client: dict[str, Any]) -> dict[str, Any]:
     website = str(client.get("Website") or "")
     domain = website.replace("https://", "").replace("http://", "")
@@ -108,7 +225,13 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
     label = description or advertiser
     cancelled = bool(contract.get("Cancelled"))
     is_contract = bool(contract.get("IsContract"))
-    stage = "closedlost" if cancelled else "closedwon" if is_contract else "proposal"
+    is_proposal = bool(contract.get("IsProposal")) and not is_contract
+    # IsActive False comes from the UI-verified IsActiveFlag on Search rows.
+    # An inactive proposal is a dead letter: it is closed-lost on the board,
+    # and because the stage is derived from the source, reactivating in Aquira
+    # flips IsActiveFlag back and the transition-writes rule re-opens it.
+    dead_proposal = contract.get("IsActive") is False and is_proposal
+    stage = "closedlost" if cancelled or dead_proposal else "closedwon" if is_contract else "proposal"
     props = {
         "dealname": f"{contract.get('ContractCD')} — {label}",
         "amount": contract.get("TotalValue") or 0,
@@ -120,6 +243,7 @@ def deal_properties(contract: dict[str, Any], advertiser_name: str | None = None
         "aquira_status": contract.get("Status") or ("Booked" if is_contract else "Proposal"),
         "aquira_is_proposal": bool(contract.get("IsProposal")),
         "aquira_is_contract": is_contract,
+        "aquira_is_active": True if contract.get("IsActive") is None else bool(contract.get("IsActive")),
         "aquira_sign_date": contract.get("SignDate") or "",
         "aquira_start_date": contract.get("StartDate") or "",
         "aquira_end_date": contract.get("EndDate") or "",
@@ -151,6 +275,7 @@ def plan_upsert(
     existing: dict[str, Any] | None,
     associations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    proposed, suppressed = _suppress_blank_overwrite(entity_type, proposed, existing)
     digest = content_hash(proposed)
     existing_hash = (existing or {}).get("hash")
     diffs = [
@@ -170,6 +295,11 @@ def plan_upsert(
             "diffs": [],
             "properties": proposed,
             "associations": associations,
+            "suppressed": suppressed,
+            "warning": (
+                f"Withheld blank/zero overwrite for {', '.join(sorted(suppressed))} "
+                f"on {entity_type} {aquira_id} — the Aquira read looks thin, not empty"
+            ) if suppressed else None,
         }
     if existing is None:
         diffs = [{**row, "from": None} for row in diffs]
@@ -182,6 +312,11 @@ def plan_upsert(
         "diffs": diffs,
         "properties": proposed,
         "associations": associations,
+        "suppressed": suppressed,
+        "warning": (
+            f"Withheld blank/zero overwrite for {', '.join(sorted(suppressed))} "
+            f"on {entity_type} {aquira_id} — the Aquira read looks thin, not empty"
+        ) if suppressed else None,
     }
 
 
@@ -274,10 +409,16 @@ def plan_deals(
     existing_by_aquira: dict[str, dict[str, Any]],
     owner_by_aquira_user: dict[str, str],
     client_name_by_id: dict[str, str] | None = None,
+    snapshots: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     names = client_name_by_id or {}
+    snap_map = snapshots or {}
     for contract in contracts:
+        if contract.get("IsActive") is False:
+            # Deactivated in Aquira = deleted in the UI. plan_inactive_deal_archives
+            # owns these records; upserting against an archived deal only errors.
+            continue
         attach_revenue_summary(contract)
         advertiser_name = names.get(str(contract.get("AdvertiserID")))
         props = deal_properties(contract, advertiser_name)
@@ -288,17 +429,105 @@ def plan_deals(
         if owner_id:
             props["hubspot_owner_id"] = str(owner_id)
         company_ids = list({str(contract.get("AccountID") or ""), str(contract.get("AdvertiserID") or "")} - {""})
+        aid = str(contract.get("ID"))
+        existing = existing_by_aquira.get(aid)
+        to_write, preserved = apply_deal_field_ownership(props, existing, snap_map.get(aid))
         item = plan_upsert(
             "deal",
-            str(contract.get("ID")),
+            aid,
             str(props.get("dealname") or ""),
-            props,
-            existing_by_aquira.get(str(contract.get("ID"))),
+            to_write,
+            existing,
             {"companyIds": company_ids, "ownerId": owner_id},
         )
+        item["preserved"] = preserved
+        # What the SOURCE derives right now — persisted as the Aquira-side
+        # baseline so the next run can tell its own transitions from rep moves.
+        item["aquiraDerived"] = {f: props.get(f) for f in HUMAN_MANAGED_DEAL_FIELDS}
+        if (existing or {}).get("archived") and item.get("action") in {"update", "skip"}:
+            # A reactivated contract whose deal we previously archived: restore
+            # it (apply unarchives, then falls through to update) instead of
+            # creating a second deal for the same record. Even a property-for-
+            # property "skip" must unarchive — archived is not a state to skip.
+            item["action"] = "unarchive"
         if contract.get("amount_warning"):
             item["warning"] = contract["amount_warning"]
         items.append(item)
+    return items
+
+
+def plan_missing_deals(
+    deals_by_aquira: dict[str, dict[str, Any]],
+    catalog_contract_ids: set[str],
+    *,
+    allow_archive: bool,
+) -> list[dict[str, Any]]:
+    """HubSpot deals whose Aquira contract vanished from a COMPLETE enumeration.
+
+    Aquira deactivates rather than deletes, so a disappearance is either an
+    actual deletion or a pull that missed rows — this only ever runs when the
+    caller certified the pull (allow_archive), and it archives (recoverable),
+    never hard-deletes.
+    """
+    if not allow_archive:
+        return []
+    items: list[dict[str, Any]] = []
+    for aid, entry in deals_by_aquira.items():
+        if str(aid) in catalog_contract_ids:
+            continue
+        hubspot_id = str(entry.get("hubspotId") or "")
+        if not hubspot_id:
+            continue
+        properties = entry.get("properties") or {}
+        items.append(
+            {
+                "entityType": "deal",
+                "aquiraId": str(aid),
+                "hubspotId": hubspot_id,
+                "action": "archive",
+                "name": str(properties.get("dealname") or f"Aquira deal {aid}"),
+                "diffs": [{"field": "presence", "from": "in HubSpot", "to": "absent from certified Aquira catalog"}],
+                "properties": {},
+            }
+        )
+    return items
+
+
+def plan_inactive_deal_archives(
+    contracts: list[dict[str, Any]],
+    deals_by_aquira: dict[str, dict[str, Any]],
+    *,
+    allow_archive: bool,
+) -> list[dict[str, Any]]:
+    """Inactive is Aquira's delete button: no hard delete exists, staff
+    deactivate and the row vanishes behind UI filters. Mirror that in HubSpot
+    by archiving the deal — recoverable, so a reactivation unarchives the
+    same record instead of creating a twin. Revenue-period fate is decided in
+    plan_revenue: booked contracts keep their periods for historical
+    modelling; proposals get theirs purged to save records."""
+    if not allow_archive:
+        return []
+    items: list[dict[str, Any]] = []
+    for contract in contracts:
+        if contract.get("IsActive") is not False:
+            continue
+        aid = str(contract.get("ID") or "")
+        entry = deals_by_aquira.get(aid) or {}
+        hubspot_id = str(entry.get("hubspotId") or "")
+        if not hubspot_id or entry.get("archived"):
+            continue
+        properties = entry.get("properties") or {}
+        items.append(
+            {
+                "entityType": "deal",
+                "aquiraId": aid,
+                "hubspotId": hubspot_id,
+                "action": "archive",
+                "name": str(properties.get("dealname") or contract.get("ContractCD") or f"Aquira deal {aid}"),
+                "diffs": [{"field": "IsActive", "from": True, "to": False}],
+                "properties": {},
+            }
+        )
     return items
 
 
@@ -323,6 +552,13 @@ def plan_revenue(
     items: list[dict[str, Any]] = []
     produced: set[str] = set()
     for contract in contracts:
+        if contract.get("IsActive") is False:
+            # Produce nothing for deactivated records. Whether their existing
+            # periods survive is the caller's scope decision: booked contracts
+            # are dropped from only_contract_ids (hold for historical
+            # modelling), inactive proposals stay in scope, so every period
+            # they still have is stale and gets purged.
+            continue
         periods, _summary = attach_revenue_summary(contract)
         company_ids: list[str] = []
         for raw in (contract.get("AccountID"), contract.get("AdvertiserID")):
@@ -379,19 +615,20 @@ def plan_revenue(
     return items
 
 
-def plan_identity_writebacks(hubspot_companies: list[dict[str, Any]], aquira_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def plan_identity_writebacks(
+    hubspot_companies: list[dict[str, Any]],
+    aquira_by_id: dict[str, dict[str, Any]],
+    snapshots: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    snap_map = snapshots or {}
     for company in hubspot_companies:
-        client = aquira_by_id.get(str(company.get("aquira_id") or ""))
+        aid = str(company.get("aquira_id") or "")
+        client = aquira_by_id.get(aid)
         if not client:
             continue
         properties = company.get("properties") or {}
-        proposed = {
-            "Name": str(properties.get("name") or client.get("Name") or ""),
-            "Phone": str(properties.get("phone") or client.get("Phone") or ""),
-            "Website": str(properties.get("domain") or client.get("Website") or ""),
-            "PhysicalAddress": str(properties.get("address") or client.get("PhysicalAddress") or ""),
-        }
+        proposed, conflicts = _three_way_fields(properties, client, snap_map.get(aid), COMPANY_IDENTITY_PAIRS)
         current = {
             "Name": client.get("Name") or "",
             "Phone": client.get("Phone") or "",
@@ -400,35 +637,59 @@ def plan_identity_writebacks(hubspot_companies: list[dict[str, Any]], aquira_by_
         }
         diffs = field_diff(current, proposed)
         if not diffs:
+            if conflicts:
+                items.append(
+                    {
+                        "entityType": "client",
+                        "aquiraId": aid,
+                        "hubspotId": company.get("hubspotId"),
+                        "action": "skip",
+                        "name": client.get("Name") or "",
+                        "diffs": [],
+                        "properties": {},
+                        "writeback": True,
+                        "conflicts": conflicts,
+                        "warning": (
+                            f"Identity conflict on company {aid}: {', '.join(conflicts)} changed on BOTH "
+                            "sides since the last sync — neither was written; reconcile one side manually"
+                        ),
+                    }
+                )
             continue
-        items.append(
-            {
-                "entityType": "client",
-                "aquiraId": str(company.get("aquira_id")),
-                "hubspotId": company.get("hubspotId"),
-                "action": "update",
-                "name": client.get("Name") or "",
-                "diffs": diffs,
-                "properties": proposed,
-                "writeback": True,
-            }
-        )
+        item = {
+            "entityType": "client",
+            "aquiraId": aid,
+            "hubspotId": company.get("hubspotId"),
+            "action": "update",
+            "name": client.get("Name") or "",
+            "diffs": diffs,
+            "properties": proposed,
+            "writeback": True,
+        }
+        if conflicts:
+            item["conflicts"] = conflicts
+            item["warning"] = (
+                f"Identity conflict on company {aid}: {', '.join(conflicts)} changed on BOTH sides "
+                "since the last sync — those fields were left alone; reconcile manually"
+            )
+        items.append(item)
     return items
 
 
-def plan_contact_writebacks(hubspot_contacts: list[dict[str, Any]], aquira_by_id: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def plan_contact_writebacks(
+    hubspot_contacts: list[dict[str, Any]],
+    aquira_by_id: dict[str, dict[str, Any]],
+    snapshots: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+    snap_map = snapshots or {}
     for row in hubspot_contacts:
-        contact = aquira_by_id.get(str(row.get("aquira_id") or ""))
+        aid = str(row.get("aquira_id") or "")
+        contact = aquira_by_id.get(aid)
         if not contact:
             continue
         properties = row.get("properties") or {}
-        proposed = {
-            "FirstName": str(properties.get("firstname") or contact.get("FirstName") or ""),
-            "LastName": str(properties.get("lastname") or contact.get("LastName") or ""),
-            "Email": str(properties.get("email") or contact.get("Email") or ""),
-            "Phone": str(properties.get("phone") or contact.get("Phone") or ""),
-        }
+        proposed, conflicts = _three_way_fields(properties, contact, snap_map.get(aid), CONTACT_IDENTITY_PAIRS)
         current = {
             "FirstName": contact.get("FirstName") or "",
             "LastName": contact.get("LastName") or "",
@@ -437,29 +698,68 @@ def plan_contact_writebacks(hubspot_contacts: list[dict[str, Any]], aquira_by_id
         }
         diffs = field_diff(current, proposed)
         if not diffs:
+            if conflicts:
+                items.append(
+                    {
+                        "entityType": "contact",
+                        "aquiraId": aid,
+                        "hubspotId": row.get("hubspotId"),
+                        "action": "skip",
+                        "name": f"{contact.get('FirstName')} {contact.get('LastName')}".strip(),
+                        "diffs": [],
+                        "properties": {},
+                        "writeback": True,
+                        "conflicts": conflicts,
+                        "warning": (
+                            f"Identity conflict on contact {aid}: {', '.join(conflicts)} changed on BOTH "
+                            "sides since the last sync — neither was written; reconcile one side manually"
+                        ),
+                    }
+                )
             continue
-        items.append(
-            {
-                "entityType": "contact",
-                "aquiraId": str(row.get("aquira_id")),
-                "hubspotId": row.get("hubspotId"),
-                "action": "update",
-                "name": f"{contact.get('FirstName')} {contact.get('LastName')}".strip(),
-                "diffs": diffs,
-                "properties": proposed,
-                "writeback": True,
-                "associations": {"clientId": contact.get("ClientID")},
-            }
-        )
+        item = {
+            "entityType": "contact",
+            "aquiraId": aid,
+            "hubspotId": row.get("hubspotId"),
+            "action": "update",
+            "name": f"{contact.get('FirstName')} {contact.get('LastName')}".strip(),
+            "diffs": diffs,
+            "properties": proposed,
+            "writeback": True,
+            "associations": {"clientId": contact.get("ClientID")},
+        }
+        if conflicts:
+            item["conflicts"] = conflicts
+            item["warning"] = (
+                f"Identity conflict on contact {aid}: {', '.join(conflicts)} changed on BOTH sides "
+                "since the last sync — those fields were left alone; reconcile manually"
+            )
+        items.append(item)
     return items
 
 
-def plan_new_aquira_clients(hubspot_companies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def plan_new_aquira_clients(
+    hubspot_companies: list[dict[str, Any]],
+    blocked_hubspot_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Approval-gated client creation: a HubSpot company becomes an Aquira
+    client ONLY when a human sets “Create in Aquira as…” on it. The dropdown
+    carries the Account-vs-Advertiser decision because Aquira cannot default it
+    the way the old automatic path silently did (everything as Account).
+    Companies with an unresolved create-failure dead letter are skipped until
+    an operator clears them — no per-run retry storms into the master system."""
+    blocked = blocked_hubspot_ids or set()
     items: list[dict[str, Any]] = []
     for company in hubspot_companies:
         if company.get("aquira_id"):
             continue
         properties = company.get("properties") or {}
+        party = str(properties.get("aquira_create_as") or "").strip().lower()
+        if party not in {"account", "advertiser", "both"}:
+            continue
+        hid = str(company.get("hubspotId") or company.get("id") or "")
+        if hid and hid in blocked:
+            continue
         name = str(properties.get("name") or company.get("name") or "New company")
         items.append(
             {
@@ -468,6 +768,7 @@ def plan_new_aquira_clients(hubspot_companies: list[dict[str, Any]]) -> list[dic
                 "hubspotId": company.get("hubspotId"),
                 "action": "create",
                 "name": name,
+                "createAs": party,
                 "diffs": [{"field": "Name", "from": None, "to": name}],
                 "properties": {
                     "Name": name,

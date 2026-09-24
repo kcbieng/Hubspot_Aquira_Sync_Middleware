@@ -177,10 +177,17 @@
           </span>
         </a>
         <div class="nav-pills d-flex flex-wrap gap-2">
-          <a class="nav-link active" href="/ui">Dashboard</a>
+          <a class="nav-link" href="/ui">Dashboard</a>
+          <a class="nav-link" href="/ui/matches">Review matches</a>
+          <a class="nav-link" href="/ui/records">History</a>
+          {% if role != 'sales' %}
           <a class="nav-link" href="/ui/settings">Settings</a>
           <a class="nav-link" href="/ui/owners">Sales reps</a>
           <a class="nav-link" href="/ui/teams">Teams</a>
+          <a class="nav-link" href="/ui/matching">Matching rules</a>
+          <a class="nav-link" href="/ui/users">Users</a>
+          <a class="nav-link" href="/ui/deadletters">Dead letters</a>
+          {% endif %}
           <a class="nav-link" href="/ui/runs">Runs</a>
           <a class="nav-link" href="/ui/logs">Logs</a>
         </div>

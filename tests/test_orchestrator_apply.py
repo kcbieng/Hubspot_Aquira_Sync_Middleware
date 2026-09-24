@@ -58,8 +58,8 @@ class FakeAquira:
         self.puts.append((aquira_id, fields))
         return {"Success": True}
 
-    def create_client(self, fields):
-        self.created.append(fields)
+    def create_client(self, fields, party_type="account"):
+        self.created.append((fields, party_type))
         return {"ID": 777, "Name": fields.get("Name")}
 
 

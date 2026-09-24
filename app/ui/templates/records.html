@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Audit</div>
+        <h2 class="mb-0">Record history</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      Every create/update/skip/archive the sync planned or applied is stored per run. Search by Aquira ID,
+      HubSpot ID, contract/client CD, or a name fragment — this is the answer to &ldquo;why does this field
+      say that?&rdquo;
+    </p>
+    <form method="get" action="/ui/records" class="row g-2 mb-4">
+      <div class="col-md-6">
+        <input class="form-control" name="q" value="{{ q }}" placeholder="e.g. 49, 1070, hs deal id, or &lsquo;Park Cities&rsquo;">
+      </div>
+      <div class="col-md-3">
+        <select class="form-select" name="entity">
+          <option value="">Any entity</option>
+          {% for e in ["company", "contact", "deal", "revenue_period", "client", "match-suggestion"] %}
+            <option value="{{ e }}" {% if entity == e %}selected{% endif %}>{{ e }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-primary w-100" type="submit">Search</button>
+      </div>
+    </form>
+
+    {% if q or entity %}
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead>
+            <tr><th>When</th><th>Run</th><th>Entity</th><th>Aquira / HubSpot</th><th>Action</th><th>What changed</th></tr>
+          </thead>
+          <tbody>
+            {% for row in entries %}
+              <tr>
+                <td class="small text-nowrap">{{ row.run.started_at.strftime('%Y-%m-%d %H:%M') if row.run and row.run.started_at else '—' }}</td>
+                <td class="small">
+                  {% if row.run %}<a href="/ui/runs/{{ row.run.id }}">#{{ row.run.id }}</a> · {{ row.run.trigger }}{% endif %}
+                  <span class="badge text-bg-{% if row.run and row.run.whatif %}light{% else %}dark{% endif %}">
+                    {{ 'what-if' if row.run and row.run.whatif else 'live' }}</span>
+                </td>
+                <td class="small">{{ row.item.entity_type }}</td>
+                <td class="small">{{ row.item.aquira_id or '—' }} / {{ row.item.hubspot_id or '—' }}</td>
+                <td class="small">
+                  <span class="badge text-bg-{% if row.item.action == 'error' %}danger{% elif row.item.action == 'create' %}success{% elif row.item.action in ('update', 'unarchive') %}info{% elif row.item.action in ('archive', 'delete-stale') %}warning{% else %}light{% endif %}">
+                    {{ row.item.action }}</span>
+                </td>
+                <td class="small">
+                  {% if row.item.error %}<span class="text-danger">{{ row.item.error }}</span>
+                  {% elif row.diff %}
+                    {% set diffs = row.diff.get('diffs') or [] %}
+                    {{ row.diff.get('name') or '' }}
+                    {% for d in diffs[:8] %}
+                      <div><code>{{ d.field }}</code>: {{ (d.get('from') if d.get('from') not in (None, '') else '∅') }} → {{ d.get('to') if d.get('to') not in (None, '') else '∅' }}</div>
+                    {% endfor %}
+                    {% if row.diff.get('matchedBy') %}<div class="text-muted">matched via “{{ row.diff.matchedBy }}”</div>{% endif %}
+                    {% if row.diff.get('preserved') %}<div class="text-muted">preserved human edits: {{ (row.diff.preserved or []) | join(', ') }}</div>{% endif %}
+                  {% else %}—{% endif %}
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="6" class="text-muted">No stored history matched that search.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+  </div>
+{% endblock %}

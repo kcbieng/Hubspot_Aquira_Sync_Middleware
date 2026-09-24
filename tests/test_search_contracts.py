@@ -15,10 +15,13 @@ def test_search_contracts_unions_lookup_and_get_proposals():
         "Success": True,
         "Data": [
             {"ID": 49, "Name": "1070"},
-            {"ID": 85, "Name": "Spring Promo", "Status": 1},
+            # Status 3 = submitted proposal in this tenant's vocabulary
+            # (UI-verified 2026-09-18); the old fixture used 1 under the
+            # generic-vocabulary assumption, but 1 is CONTRACTS here.
+            {"ID": 85, "Name": "Spring Promo", "Status": 3},
         ],
     }
-    get_all = {"Success": True, "Data": [{"ID": 90, "Status": 1, "Description": "Q1 proposal"}]}
+    get_all = {"Success": True, "Data": [{"ID": 90, "Status": 3, "Description": "Q1 proposal"}]}
 
     def fake_request(method, path, **kwargs):
         if path == "/Contract/Search":

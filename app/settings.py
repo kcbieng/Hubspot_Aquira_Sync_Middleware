@@ -37,6 +37,19 @@ class Settings(BaseSettings):
     bootstrap_hubspot: bool = True
     aquira_team_attribute: str = "Hubspot_Team"
     hubquira_role: str = "web"
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    match_digest_enabled: bool = True
+    sso_enabled: bool = False
+    oidc_issuer: str = ""  # e.g. https://login.microsoftonline.com/<tenant-id>/v2.0
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    sso_admin_group: str = ""  # Entra object id of HQ-Admins; membership => admin
+    sso_sales_group: str = ""  # Entra object id of HQ-Sales; membership => sales (else denied)
+    teams_webhook_url: str = ""  # M365 Workflows "post to channel when webhook request is received"
 
     @property
     def effective_database_url(self) -> str:

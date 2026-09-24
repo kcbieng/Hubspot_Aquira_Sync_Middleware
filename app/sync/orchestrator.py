@@ -7,12 +7,15 @@ from typing import Any
 
 from app.hashutil import content_hash
 from app.settings import get_settings
+from app.mapping.matching import apply_match_rules, match_clients
 from app.sync.planner import (
     plan_companies,
     plan_contact_writebacks,
     plan_contacts,
     plan_deals,
     plan_identity_writebacks,
+    plan_inactive_deal_archives,
+    plan_missing_deals,
     plan_new_aquira_clients,
     plan_revenue,
 )
@@ -111,6 +114,7 @@ def _index_existing(rows: list[dict[str, Any]]) -> tuple[dict[str, dict[str, Any
             "hubspotId": str(row.get("id") or row.get("hubspotId") or ""),
             "properties": properties,
             "hash": row.get("hash") or content_hash(properties),
+            "archived": bool(row.get("archived")),
         }
         aquira_id = str(properties.get("aquira_id") or row.get("aquira_id") or "")
         if aquira_id:
@@ -163,11 +167,17 @@ class SyncOrchestrator:
         owner_by_aquira: dict[str, str],
         create_missing_clients: bool = False,
         aquira_id: str | None = None,
+        allow_prune: bool = False,
+        snapshots: dict[str, dict[str, Any]] | None = None,
+        match_rules: dict[str, list[dict[str, Any]]] | None = None,
+        match_exclusions: dict[str, set[tuple[str, str]]] | None = None,
+        create_blocked_ids: set[str] | None = None,
     ) -> list[dict[str, Any]]:
         wanted = self._wanted(entities)
         clients = catalog.get("clients") or []
         contacts = catalog.get("contacts") or []
         contracts = catalog.get("contracts") or []
+        snap = snapshots or {}
         companies_by_aquira, _ = _index_existing(existing.get("companies") or [])
         contacts_by_aquira, contacts_by_email = _index_existing(existing.get("contacts") or [])
         deals_by_aquira, _ = _index_existing(existing.get("deals") or [])
@@ -175,19 +185,95 @@ class SyncOrchestrator:
         client_name_by_id = {str(client.get("ID")): str(client.get("Name") or "") for client in clients}
 
         items: list[dict[str, Any]] = []
+        linked_hubspot_ids: set[str] = set()
         if "companies" in wanted:
-            items.extend(plan_companies(clients, companies_by_aquira))
+            # Lead-first business flow: sales creates the company in HubSpot
+            # before Aquira knows it exists. Match instead of duplicating —
+            # with the admin's ordered rules when present, the built-in
+            # domain/name heuristic otherwise.
+            unlinked_rows = [
+                row
+                for row in (existing.get("companies") or [])
+                if not str((row.get("properties") or {}).get("aquira_id") or "").strip()
+            ]
+            rules = [r for r in ((match_rules or {}).get("company") or []) if isinstance(r, dict)]
+            banned = set((match_exclusions or {}).get("company") or set())
+            if rules:
+                links, suggestions = apply_match_rules(clients, unlinked_rows, rules, banned)
+            else:
+                links, suggestions = match_clients(clients, unlinked_rows)
+                if banned:
+                    links = {k: v for k, v in links.items() if (k, v[0]) not in banned}
+                    suggestions = [s for s in suggestions if (s["aquiraId"], s["hubspotId"]) not in banned]
+            rows_by_id = {str(row.get("id") or row.get("hubspotId") or ""): row for row in unlinked_rows}
+            for cid, (hid, _rule) in links.items():
+                row = rows_by_id.get(hid) or {}
+                props = row.get("properties") or {}
+                companies_by_aquira[cid] = {"hubspotId": hid, "properties": props, "hash": content_hash(props)}
+            linked_hubspot_ids = {hid for hid, _ in links.values()}
+            company_items = plan_companies(clients, companies_by_aquira)
+            for citem in company_items:
+                match = links.get(str(citem.get("aquiraId")))
+                if match:
+                    citem["matchedBy"] = match[1]
+            items.extend(company_items)
+            items.extend(self._match_notices(suggestions, "company"))
         if "contacts" in wanted:
-            items.extend(plan_contacts(contacts, contacts_by_aquira, contacts_by_email))
+            contact_rules = [r for r in ((match_rules or {}).get("contact") or []) if isinstance(r, dict)]
+            if contact_rules:
+                unlinked_contacts = [
+                    row
+                    for row in (existing.get("contacts") or [])
+                    if not str((row.get("properties") or {}).get("aquira_id") or "").strip()
+                ]
+                clinks, csuggestions = apply_match_rules(
+                    contacts, unlinked_contacts, contact_rules, set((match_exclusions or {}).get("contact") or set())
+                )
+                crows = {str(row.get("id") or row.get("hubspotId") or ""): row for row in unlinked_contacts}
+                for cid, (hid, _rule) in clinks.items():
+                    props = (crows.get(hid) or {}).get("properties") or {}
+                    contacts_by_aquira[cid] = {"hubspotId": hid, "properties": props, "hash": content_hash(props)}
+                contact_items = plan_contacts(contacts, contacts_by_aquira, contacts_by_email)
+                for citem in contact_items:
+                    match = clinks.get(str(citem.get("aquiraId")))
+                    if match:
+                        citem["matchedBy"] = match[1]
+                items.extend(contact_items)
+                items.extend(self._match_notices(csuggestions, "contact"))
+            else:
+                items.extend(plan_contacts(contacts, contacts_by_aquira, contacts_by_email))
         if "deals" in wanted:
-            items.extend(plan_deals(contracts, deals_by_aquira, owner_by_aquira, client_name_by_id))
+            items.extend(
+                plan_deals(contracts, deals_by_aquira, owner_by_aquira, client_name_by_id, snap.get("deal") or {})
+            )
+            if aquira_id is None:
+                catalog_deal_ids = {str(row.get("ID")) for row in contracts if row.get("ID") is not None}
+                items.extend(
+                    plan_missing_deals(deals_by_aquira, catalog_deal_ids, allow_archive=allow_prune)
+                )
+                # Deactivated-in-Aquira is the tenant's delete gesture.
+                items.extend(
+                    plan_inactive_deal_archives(contracts, deals_by_aquira, allow_archive=allow_prune)
+                )
         if "revenue" in wanted:
-            in_scope = {str(row.get("ID")) for row in contracts if row.get("ID") is not None}
+            # A contract whose line detail failed to load is excluded from the prune
+            # scope: it is in this run but produced zero periods, so leaving it in
+            # would archive real revenue months and re-create them next run.
+            # Booked-but-inactive contracts are also excluded: their periods are
+            # held intact for historical modelling. Inactive PROPOSALS stay in
+            # scope with no desired periods, which purges them.
+            in_scope = {
+                str(row.get("ID"))
+                for row in contracts
+                if row.get("ID") is not None
+                and not row.get("_detail_failed")
+                and not (row.get("IsActive") is False and row.get("IsContract"))
+            }
             items.extend(
                 plan_revenue(
                     contracts,
                     revenue_by_aquira,
-                    prune_stale=bool(in_scope),
+                    prune_stale=allow_prune and bool(in_scope),
                     only_contract_ids=in_scope or None,
                 )
             )
@@ -204,7 +290,13 @@ class SyncOrchestrator:
                     }
                 )
             aquira_by_id = {str(client.get("ID")): client for client in clients}
-            items.extend(plan_identity_writebacks([row for row in hs_companies if row.get("aquira_id")], aquira_by_id))
+            items.extend(
+                plan_identity_writebacks(
+                    [row for row in hs_companies if row.get("aquira_id")],
+                    aquira_by_id,
+                    snap.get("company") or {},
+                )
+            )
 
             hs_contacts = []
             for row in existing.get("contacts") or []:
@@ -218,10 +310,119 @@ class SyncOrchestrator:
                     }
                 )
             aquira_contacts = {str(contact.get("ID")): contact for contact in contacts}
-            items.extend(plan_contact_writebacks([row for row in hs_contacts if row.get("aquira_id")], aquira_contacts))
+            items.extend(
+                plan_contact_writebacks(
+                    [row for row in hs_contacts if row.get("aquira_id")],
+                    aquira_contacts,
+                    snap.get("contact") or {},
+                )
+            )
             if create_missing_clients:
-                items.extend(plan_new_aquira_clients(existing.get("unsynced") or []))
+                # Companies already auto-linked this run already got their
+                # aquira_id from the match — do not also create an Aquira client
+                # for the same lead.
+                unmatched_unsynced = [
+                    row
+                    for row in (existing.get("unsynced") or [])
+                    if str(row.get("id") or row.get("hubspotId") or "") not in linked_hubspot_ids
+                ]
+                items.extend(
+                    plan_new_aquira_clients(unmatched_unsynced, blocked_hubspot_ids=create_blocked_ids)
+                )
         return items
+
+    @staticmethod
+    def _match_notices(suggestions: list[dict[str, Any]], kind: str = "company") -> list[dict[str, Any]]:
+        """Rule/heuristic suggestions become notice items: visible in the run
+        and in warnings, applied as nothing. The same notices are recorded as
+        MatchSuggestion rows so the people who own the record can fix them on
+        /ui/matches — confirm by setting the record's Aquira ID property on
+        HubSpot, or click Link there and the next sync inherits it."""
+        notices: list[dict[str, Any]] = []
+        for s in suggestions:
+            score_part = f" (score {s['score']})" if s.get("score") else ""
+            notices.append(
+                {
+                    "entityType": "match-suggestion",
+                    "suggestionEntity": kind,
+                    "aquiraId": s["aquiraId"],
+                    "hubspotId": s["hubspotId"],
+                    "action": "notice",
+                    "name": f'{s["clientName"]} ≈ {s["companyName"]}',
+                    "diffs": [],
+                    "properties": {},
+                    "match": s,
+                    "warning": (
+                        f"Match needs a human: Aquira '{s['clientName']}' ({s['aquiraId']}) "
+                        f"≈ HubSpot '{s['companyName']}' ({s['hubspotId']}) via {s['method']}"
+                        f"{score_part} — {s['reason']}. To link: set that HubSpot record's Aquira ID "
+                        f"property to {s['aquiraId']}; the next sync inherits the link."
+                    ),
+                }
+            )
+        return notices
+
+    @staticmethod
+    def _record_suggestions(
+        repo: Any,
+        items: list[dict[str, Any]],
+        catalog: dict[str, list[dict[str, Any]]],
+        existing: dict[str, list[dict[str, Any]]],
+        run_id: int | None,
+    ) -> None:
+        """Persist notices as MatchSuggestion rows (in whatif too — they are
+        information, not writes) and auto-resolve stale ones. The assignee is
+        the Aquira sales rep's mapped HubSpot-user email when we know it, so
+        the digest reaches the person who can answer, not a general inbox."""
+        if not hasattr(repo, "record_match_suggestion"):
+            return
+        rep_emails: dict[str, str] = {}
+        try:
+            for row in repo.list_owner_maps() or []:
+                email = str(getattr(row, "hubspot_email", None) or getattr(row, "aquira_email", None) or "").strip()
+                if not email:
+                    continue
+                for key in (getattr(row, "aquira_user_id", None), getattr(row, "aquira_sales_rep_id", None)):
+                    if key:
+                        rep_emails[str(key).strip().lower()] = email
+        except Exception:
+            rep_emails = {}
+        clients = {str(row.get("ID")): row for row in catalog.get("clients") or []}
+        contacts = {str(row.get("ID")): row for row in catalog.get("contacts") or []}
+        for item in items:
+            if item.get("entityType") != "match-suggestion":
+                continue
+            s = item.get("match") or {}
+            kind = str(item.get("suggestionEntity") or "company")
+            aid = str(item.get("aquiraId") or "")
+            hid = str(item.get("hubspotId") or "")
+            if not aid or not hid:
+                continue
+            row = clients.get(aid) if kind == "company" else contacts.get(aid)
+            owner_client = row if kind == "company" else clients.get(str((row or {}).get("ClientID") or ""))
+            rep = str((owner_client or {}).get("SalesRepID") or "").strip().lower()
+            try:
+                repo.record_match_suggestion(
+                    kind, aid, hid,
+                    aquira_name=s.get("clientName"), hubspot_name=s.get("companyName"),
+                    method=s.get("method"), reason=s.get("reason"),
+                    score=int(s.get("score") or 0),
+                    assignee_email=rep_emails.get(rep) or None,
+                    run_id=run_id,
+                )
+            except Exception:
+                pass
+        try:
+            for kind, rows_key in (("company", "companies"), ("contact", "contacts")):
+                linked = {
+                    str((row.get("properties") or {}).get("aquira_id") or "").strip()
+                    for row in (existing.get(rows_key) or [])
+                }
+                linked.discard("")
+                if linked and hasattr(repo, "resolve_suggestions_for_links"):
+                    repo.resolve_suggestions_for_links(kind, linked)
+        except Exception:
+            pass
 
     def _owner_map(self, repo: Any, reps: list[dict[str, Any]] | None = None) -> dict[str, str]:
         from app.mapping.owners import expand_owner_lookup
@@ -365,6 +566,19 @@ class SyncOrchestrator:
                     existing["contacts"] = projection.get("contacts") or []
                     existing["deals"] = projection.get("deals") or []
                     existing["revenue"] = projection.get("revenue") or []
+                    if hasattr(hubspot, "archived_deals"):
+                        try:
+                            live_ids = {
+                                str((row.get("properties") or {}).get("aquira_id") or "")
+                                for row in existing["deals"]
+                            }
+                            for row in hubspot.archived_deals():
+                                if str((row.get("properties") or {}).get("aquira_id") or "") not in live_ids:
+                                    existing["deals"].append(row)
+                        except Exception as exc:
+                            # Without the archived view a reactivated deal would
+                            # look absent and be re-created as a duplicate.
+                            warnings.append(f"Could not list archived HubSpot deals: {exc}")
                 if settings.sync_create_aquira_client and hasattr(hubspot, "companies_without_aquira") and not aquira_id:
                     try:
                         existing["unsynced"] = [
@@ -378,6 +592,16 @@ class SyncOrchestrator:
                         ]
                     except Exception as exc:
                         warnings.append(f"Could not list HubSpot companies without aquira_id: {exc}")
+                    if existing["unsynced"] and hasattr(hubspot, "known_property_names"):
+                        try:
+                            if "aquira_create_as" not in hubspot.known_property_names("companies"):
+                                warnings.append(
+                                    "HubSpot is missing the 'aquira_create_as' property — no clients will be "
+                                    "created in Aquira until the schema is bootstrapped (the dropdown IS the "
+                                    "approval gate now)"
+                                )
+                        except Exception:
+                            pass
             except Exception as exc:
                 warnings.append(f"HubSpot pull failed: {exc}")
                 repo.add_event("sync", "ERROR", f"HubSpot pull failed: {exc}")
@@ -400,7 +624,41 @@ class SyncOrchestrator:
             return None
         return lookup.get(str(aquira_id))
 
+    @staticmethod
+    def _persist_snapshot(
+        repo: Any,
+        item: dict[str, Any],
+        clients_by_aid: dict[str, dict[str, Any]],
+        contacts_by_aid: dict[str, dict[str, Any]],
+    ) -> None:
+        """Record the last-sync state (both sides) for one mapped record, so the
+        next run can distinguish its own source-transitions from human edits."""
+        if item.get("writeback") or str(item.get("action") or "") not in {"create", "update", "skip"}:
+            return
+        etype = str(item.get("entityType") or "")
+        aid = str(item.get("aquiraId") or "")
+        if etype not in {"company", "contact", "deal"} or not aid:
+            return
+        hubspot_side = item.get("properties") or {}
+        aquira_side: dict[str, Any] = {}
+        if etype == "deal":
+            aquira_side = item.get("aquiraDerived") or {}
+        elif etype == "company":
+            row = clients_by_aid.get(aid)
+            if row:
+                aquira_side = {k: str(row.get(k) or "") for k in ("Name", "Phone", "Website", "PhysicalAddress")}
+        else:
+            row = contacts_by_aid.get(aid)
+            if row:
+                aquira_side = {k: str(row.get(k) or "") for k in ("FirstName", "LastName", "Email", "Phone")}
+        try:
+            repo.save_snapshot(etype, aid, hubspot_side, aquira_side)
+        except Exception:
+            pass
+
     def apply_item(self, item: dict[str, Any], aquira: Any | None, hubspot: Any | None, lookup: dict[tuple[str, str], str]) -> dict[str, Any]:
+        if item.get("action") == "notice":
+            return item  # operator information only; nothing to apply on either side
         if item.get("action") == "skip":
             ident = str(item.get("hubspotId") or lookup.get((item.get("entityType"), str(item.get("aquiraId") or ""))) or "").strip()
             if not ident:
@@ -415,7 +673,7 @@ class SyncOrchestrator:
 
         if item.get("writeback") and item.get("action") == "create" and item.get("entityType") == "client":
             if aquira is not None:
-                created = aquira.create_client(item.get("properties") or {})
+                created = aquira.create_client(item.get("properties") or {}, party_type=item.get("createAs") or "account")
                 item["aquiraId"] = str(created.get("ID"))
                 if hubspot is not None and item.get("hubspotId"):
                     hubspot.upsert_crm("companies", {"aquira_id": str(created.get("ID"))}, item.get("hubspotId"))
@@ -435,7 +693,15 @@ class SyncOrchestrator:
                     aquira.update_client_sparse(item["aquiraId"], {"Email": fields.get("Email"), "Phone": fields.get("Phone")})
             return item
 
-        if item.get("action") == "delete-stale" and item.get("hubspotId"):
+        if item.get("action") == "unarchive" and item.get("hubspotId"):
+            # Reactivated contract: restore the archived record we made for it,
+            # then update it in this same pass rather than creating a twin.
+            if hubspot is not None:
+                hubspot.restore(self._hubspot_type(item["entityType"], hubspot), item["hubspotId"])
+            item["action"] = "update"
+            item["unarchived"] = True
+
+        if item.get("action") in {"delete-stale", "archive"} and item.get("hubspotId"):
             if hubspot is not None:
                 hubspot.archive(self._hubspot_type(item["entityType"], hubspot), item["hubspotId"])
             return item
@@ -519,6 +785,7 @@ class SyncOrchestrator:
             {"trigger": context.trigger, "whatif": context.whatif, "entities": entities, "aquira_id": context.aquira_id},
         )
         warnings: list[str] = []
+        notices: list[str] = []
         live_aquira = aquira
         live_hubspot = hubspot
         try:
@@ -567,6 +834,63 @@ class SyncOrchestrator:
                 teams_by_id=teams_by_id,
             )
 
+            integrity = catalog.get("_integrity") or {}
+            allow_prune = bool(integrity.get("certified"))
+            if "revenue" in self._wanted(entities) and not allow_prune:
+                detail = {
+                    "failed_reads": integrity.get("failed_reads", 0),
+                    "failed_calls": (integrity.get("failed_calls") or [])[:8],
+                    "truncated_sources": integrity.get("truncated_sources") or [],
+                    "detail_failures": integrity.get("detail_failures", 0),
+                }
+                causes: list[str] = []
+                if detail["truncated_sources"]:
+                    causes.append(
+                        f"{len(detail['truncated_sources'])} source(s) hit the Aquira row cap "
+                        f"({', '.join(detail['truncated_sources'][:4])}) — records beyond it are invisible"
+                    )
+                if detail["failed_reads"]:
+                    causes.append(f"{detail['failed_reads']} failed read(s)")
+                if detail["detail_failures"]:
+                    causes.append(f"{detail['detail_failures']} contract detail load(s) failed")
+                message = (
+                    "Revenue pruning suppressed: the Aquira pull is not certified complete "
+                    f"({'; '.join(causes) or 'reason unknown'}); "
+                    f"{integrity.get('contract_rows', 0)} contract(s) were visible to this run. "
+                    "Existing revenue_period records were left untouched."
+                )
+                # A notice, not a warning: a suppressed prune is a safe outcome and
+                # must not flip an otherwise clean run to status="error".
+                notices.append(message)
+                repo.add_event("sync", "WARN", message, detail)
+
+            try:
+                raw_snapshots = repo.get_snapshots() if hasattr(repo, "get_snapshots") else {}
+                snapshots = raw_snapshots if isinstance(raw_snapshots, dict) else {}
+            except Exception:
+                snapshots = {}
+            try:
+                match_rules: dict[str, list[dict[str, Any]]] = {}
+                for entity_type in ("company", "contact"):
+                    raw_rules = repo.active_match_rules(entity_type) if hasattr(repo, "active_match_rules") else []
+                    match_rules[entity_type] = [r for r in (raw_rules or []) if isinstance(r, dict)]
+            except Exception:
+                match_rules = {}
+            try:
+                match_exclusions = {
+                    entity_type: set(repo.exclusions_for(entity_type)) if hasattr(repo, "exclusions_for") else set()
+                    for entity_type in ("company", "contact")
+                }
+            except Exception:
+                match_exclusions = {}
+            create_blocked: set[str] = set()
+            if settings.sync_create_aquira_client and not context.aquira_id:
+                try:
+                    create_blocked = (
+                        set(repo.open_client_create_failures()) if hasattr(repo, "open_client_create_failures") else set()
+                    )
+                except Exception:
+                    create_blocked = set()
             items = self.build_plan(
                 catalog,
                 existing,
@@ -574,7 +898,14 @@ class SyncOrchestrator:
                 owner_lookup,
                 create_missing_clients=bool(settings.sync_create_aquira_client),
                 aquira_id=context.aquira_id,
+                allow_prune=allow_prune,
+                snapshots=snapshots,
+                match_rules=match_rules,
+                match_exclusions=match_exclusions,
+                create_blocked_ids=create_blocked,
             )
+            clients_by_aid = {str(row.get("ID")): row for row in catalog.get("clients") or []}
+            contacts_by_aid = {str(row.get("ID")): row for row in catalog.get("contacts") or []}
             for item in items:
                 warning = item.get("warning")
                 if warning:
@@ -606,6 +937,7 @@ class SyncOrchestrator:
                         "run_id": getattr(run, "id", None),
                         "counts": {},
                         "warnings": warnings,
+                        "notices": notices,
                         "item_count": 0,
                         "error": message,
                     }
@@ -653,6 +985,8 @@ class SyncOrchestrator:
                                 )
                             except Exception:
                                 pass
+                        if not context.whatif:
+                            self._persist_snapshot(repo, next_item, clients_by_aid, contacts_by_aid)
                     except Exception as exc:
                         message = str(exc)
                         failed = {**item, "action": "error", "error": message}
@@ -667,9 +1001,20 @@ class SyncOrchestrator:
                             error=message,
                         )
                         try:
-                            repo.add_dead_letter(item.get("entityType"), item.get("aquiraId"), message, item.get("properties"), attempts=1)
+                            repo.add_dead_letter(
+                                item.get("entityType"),
+                                item.get("aquiraId"),
+                                message,
+                                {**(item.get("properties") or {}), "_hubspotId": item.get("hubspotId")},
+                                attempts=1,
+                            )
                         except Exception:
                             pass
+
+            try:
+                self._record_suggestions(repo, items, catalog, existing, getattr(run, "id", None))
+            except Exception:
+                logger.exception("Could not record match suggestions")
 
             counts: dict[str, int] = {}
             for item in applied:
@@ -682,7 +1027,7 @@ class SyncOrchestrator:
                 status = "partial"
             else:
                 status = "success"
-            summary = {"counts": counts, "itemCount": len(applied), "warnings": warnings}
+            summary = {"counts": counts, "itemCount": len(applied), "warnings": warnings, "notices": notices}
             if hasattr(run, "status"):
                 run.status = status
             if hasattr(run, "summary_json"):
@@ -706,6 +1051,19 @@ class SyncOrchestrator:
             except Exception:
                 pass
             repo.add_event("sync", "INFO", "sync completed", {"trigger": context.trigger, "whatif": context.whatif, "entities": entities, "counts": counts, "status": status})
+            try:
+                from app import alerts
+
+                alerts.report_run(
+                    status=status,
+                    error_count=error_count,
+                    notices=notices,
+                    warnings=warnings,
+                    run_id=getattr(run, "id", None),
+                    whatif=bool(context.whatif),
+                )
+            except Exception:
+                logger.debug("alert dispatch failed", exc_info=True)
             return {
                 "status": status,
                 "trigger": context.trigger,
@@ -715,10 +1073,22 @@ class SyncOrchestrator:
                 "run_id": getattr(run, "id", None),
                 "counts": counts,
                 "warnings": warnings,
+                "notices": notices,
                 "item_count": len(applied),
             }
         except Exception as exc:
             repo.add_event("sync", "ERROR", "sync failed", {"error": str(exc), "entities": entities})
+            try:
+                from app import alerts
+
+                alerts.report_run(
+                    status="error",
+                    run_id=getattr(run, "id", None) if "run" in dir() else None,
+                    whatif=bool(context.whatif),
+                    exception=f"sync crashed: {exc}",
+                )
+            except Exception:
+                logger.debug("alert dispatch failed", exc_info=True)
             if hasattr(run, "status"):
                 run.status = "error"
             if hasattr(run, "error"):

@@ -78,6 +78,17 @@ COMPANY_PROPS = [
     },
     {"name": "aquira_version", "label": "Aquira version", "type": "number", "fieldType": "number"},
     {"name": "aquira_hubspot_team", "label": "Aquira HubSpot team", "type": "string", "fieldType": "text"},
+    {
+        "name": "aquira_create_as",
+        "label": "Create in Aquira as (leave blank = do not create)",
+        "type": "enumeration",
+        "fieldType": "select",
+        "options": [
+            {"label": "Account (billing parent)", "value": "account"},
+            {"label": "Advertiser (buys media)", "value": "advertiser"},
+            {"label": "Advertiser + Account (both)", "value": "both"},
+        ],
+    },
 ]
 CONTACT_PROPS = [
     {"name": "aquira_id", "label": "Aquira ID", "type": "string", "fieldType": "text", "hasUniqueValue": True},
@@ -91,6 +102,7 @@ DEAL_PROPS = [
     {"name": "aquira_status", "label": "Aquira status", "type": "string", "fieldType": "text"},
     {"name": "aquira_is_proposal", "label": "Aquira is proposal", "type": "bool", "fieldType": "booleancheckbox", "options": BOOL_OPTIONS},
     {"name": "aquira_is_contract", "label": "Aquira is contract", "type": "bool", "fieldType": "booleancheckbox", "options": BOOL_OPTIONS},
+    {"name": "aquira_is_active", "label": "Aquira is active", "type": "bool", "fieldType": "booleancheckbox", "options": BOOL_OPTIONS},
     {"name": "aquira_sign_date", "label": "Aquira sign date", "type": "date", "fieldType": "date"},
     {"name": "aquira_start_date", "label": "Aquira start date", "type": "date", "fieldType": "date"},
     {"name": "aquira_end_date", "label": "Aquira end date", "type": "date", "fieldType": "date"},
@@ -152,6 +164,27 @@ OBJECT_GROUPS = {
     "contact": "contactinformation",
     "deals": "dealinformation",
     "deal": "dealinformation",
+}
+
+# Governance: salespeople get a short list of human-meaningful Aquira fields on
+# the default card; everything the sync needs for reconciliation still gets
+# WRITTEN but lives in its own property group so an admin can hide (or reveal)
+# the whole set in one click. Removing writes would break mismatch alerts and
+# re-linking; this trims the UI, not the data.
+AQUIRA_SYNC_GROUP = "aquira_sync_machine_fields"
+HUMAN_VISIBLE_AQUIRA_PROPS = {
+    "companies": {"aquira_id", "aquira_party_type", "aquira_create_as"},
+    "contacts": {"aquira_id"},
+    "deals": {
+        "aquira_id",
+        "aquira_contract_cd",
+        "aquira_status",
+        "aquira_start_date",
+        "aquira_end_date",
+        "aquira_stations",
+        "aquira_amount_delta",
+        "aquira_amount_mismatch",
+    },
 }
 NATIVE_PROPERTIES = {"hubspot_team_id", "hubspot_owner_id", "hs_object_id"}
 READ_ONLY_PROPERTIES = {"hubspot_team_id", "hs_object_id"}
@@ -826,6 +859,38 @@ class HubSpotClient:
                 return
             raise
 
+    def archived_deals(self) -> list[dict[str, Any]]:
+        """Deals we archived earlier (deactivated or vanished Aquira records),
+        in projection shape with archived=True — the only way a reactivated
+        contract finds its old record instead of creating a duplicate."""
+        rows: list[dict[str, Any]] = []
+        after: str | None = None
+        while True:
+            body: dict[str, Any] = {
+                "filterGroups": [{"filters": [{"propertyName": "aquira_id", "operator": "HAS_PROPERTY"}]}],
+                "properties": ["aquira_id", "dealname", "dealstage", "pipeline", "amount"],
+                "limit": 100,
+                "options": {"includeArchived": True},
+            }
+            if after:
+                body["after"] = after
+            page = self._request("POST", "/crm/v3/objects/deals/search", json=body)
+            for row in page.get("results") or []:
+                if not row.get("archived"):
+                    continue  # includeArchived ALSO returns the live records
+                props = row.get("properties") or {}
+                rows.append(
+                    {
+                        "id": str(row.get("id")),
+                        "properties": {k: v for k, v in props.items() if v not in (None, "")},
+                        "archived": True,
+                    }
+                )
+            after = str(((page.get("paging") or {}).get("next") or {}).get("after") or "") or None
+            if not after or not (page.get("results") or []):
+                break
+        return rows
+
     def associate(self, from_type: str, from_id: str, to_type: str, to_id: str, type_id: int | None = None) -> None:
         spec = self._association_spec(from_type, to_type, type_id)
         try:
@@ -906,18 +971,57 @@ class HubSpotClient:
             logger.warning("Could not create HubSpot association %s -> %s: %s", from_type, to_type, exc)
         raise HubSpotApiError(400, message=f"No association type for {from_type} -> {to_type}")
 
+    def _ensure_property_group(self, object_type: str) -> None:
+        try:
+            self._request(
+                "POST",
+                f"/crm/v3/properties/{object_type}/groups",
+                json={"name": AQUIRA_SYNC_GROUP, "label": "Aquira sync — machine fields (do not edit)"},
+            )
+        except HubSpotApiError as exc:
+            if exc.status not in {400, 409}:  # already exists is the expected answer
+                logger.warning("HubSpot property group create for %s failed (HTTP %s): %s", object_type, exc.status, exc.body[:200])
+        except Exception as exc:
+            logger.debug("Could not ensure property group for %s: %s", object_type, exc)
+
+    def _property_group(self, object_type: str, name: str) -> str:
+        if name in HUMAN_VISIBLE_AQUIRA_PROPS.get(object_type, set()):
+            return OBJECT_GROUPS.get(object_type, "coreinformation")
+        return AQUIRA_SYNC_GROUP
+
     def ensure_crm_schema(self) -> dict[str, Any]:
         created: list[str] = []
+        moved: list[str] = []
         warnings: list[str] = []
         jobs = [("companies", COMPANY_PROPS), ("contacts", CONTACT_PROPS), ("deals", DEAL_PROPS)]
         for object_type, defs in jobs:
             try:
-                existing = {item.get("name") for item in (self.get_properties(object_type).get("results") or [])}
+                existing = {
+                    item.get("name"): item
+                    for item in (self.get_properties(object_type).get("results") or [])
+                }
             except Exception as exc:
                 warnings.append(f"Could not list {object_type} properties: {exc}")
                 continue
+            self._ensure_property_group(object_type)
             for definition in defs:
+                group = self._property_group(object_type, definition["name"])
                 if definition["name"] in existing:
+                    held = existing[definition["name"]]
+                    if held.get("type") == "read-only" or held.get("name") in NATIVE_PROPERTIES:
+                        continue
+                    if (held.get("groupName") or "") != group:
+                        try:
+                            self._request(
+                                "PATCH",
+                                f"/crm/v3/properties/{object_type}/{definition['name']}",
+                                json={"groupName": group},
+                            )
+                            moved.append(f"{object_type}.{definition['name']}")
+                        except Exception as exc:
+                            warnings.append(
+                                f"Could not move {object_type}.{definition['name']} to its group: {exc}"
+                            )
                     continue
                 try:
                     self._request(
@@ -925,7 +1029,7 @@ class HubSpotClient:
                         f"/crm/v3/properties/{object_type}",
                         json={
                             **definition,
-                            "groupName": OBJECT_GROUPS.get(object_type, "coreinformation"),
+                            "groupName": group,
                         },
                     )
                     created.append(f"{object_type}.{definition['name']}")
@@ -956,7 +1060,7 @@ class HubSpotClient:
                     created.append(f"{self.revenue_object_type}.{definition['name']}")
         except Exception as exc:
             warnings.append(f"Revenue period schema unavailable: {exc}")
-        return {"created": created, "warnings": warnings}
+        return {"created": created, "moved": moved, "warnings": warnings}
 
     def ensure_proposal_stage(self) -> str:
         try:

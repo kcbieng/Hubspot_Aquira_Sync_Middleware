@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block content %}
+  {% if error %}
+    <div class="alert alert-danger" role="alert">{{ error }}</div>
+  {% endif %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Dedupe</div>
+        <h2 class="mb-0">Review record matches</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      These Aquira records look like they could be the same company or contact as an existing HubSpot record,
+      but no rule was confident enough to link them. Nothing has been changed. <strong>Link</strong> writes the
+      Aquira ID onto the HubSpot record so the sync merges them from the next run; <strong>Not a
+      duplicate</strong> tells the matcher to stop suggesting that pair.
+    </p>
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead>
+          <tr><th>Aquira</th><th>HubSpot</th><th>Why it matched</th><th>Assigned</th><th class="text-end">Decision</th></tr>
+        </thead>
+        <tbody>
+          {% for s in suggestions %}
+            <tr>
+              <td>
+                <strong>{{ s.aquira_name or ('Aquira ' ~ s.aquira_id) }}</strong>
+                <div class="small text-muted">{{ 'company' if s.entity_type == 'company' else 'contact' }} · id {{ s.aquira_id }}</div>
+              </td>
+              <td>
+                <strong>{{ s.hubspot_name or ('HubSpot ' ~ s.hubspot_id) }}</strong>
+                <div class="small text-muted">id {{ s.hubspot_id }}</div>
+              </td>
+              <td class="small">{{ s.method or 'rule' }}{% if s.score %} · score {{ s.score }}{% endif %}<div class="text-muted">{{ s.reason }}</div></td>
+              <td class="small">{{ s.assignee_email or '—' }}</td>
+              <td>
+                <form method="post" action="/ui/matches" class="d-flex gap-2 justify-content-end">
+                  <input type="hidden" name="entity_type" value="{{ s.entity_type }}">
+                  <input type="hidden" name="aquira_id" value="{{ s.aquira_id }}">
+                  <input type="hidden" name="hubspot_id" value="{{ s.hubspot_id }}">
+                  <button class="btn btn-primary btn-sm" type="submit" name="action" value="link">Link</button>
+                  <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="dismiss"
+                          onclick="return confirm('Mark these as DIFFERENT records? The matcher will stop pairing them.')">Not a duplicate</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="text-muted">Nothing waiting — every suggested pair has been linked or dismissed.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  {% if is_admin %}
+    <div class="panel-card p-4 p-md-5 mb-4">
+      <h3 class="mb-3">"Not a duplicate" exclusions</h3>
+      <p class="text-muted small">Pairs a user declared different. The matcher will not suggest them again until you remove the exclusion here.</p>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle">
+          <thead><tr><th>Entity</th><th>Aquira id</th><th>HubSpot id</th><th>By</th><th class="text-end"></th></tr></thead>
+          <tbody>
+            {% for x in exclusions %}
+              <tr>
+                <td>{{ x.entity_type }}</td><td>{{ x.aquira_id }}</td><td>{{ x.hubspot_id }}</td>
+                <td class="small text-muted">{{ x.created_by }}</td>
+                <td>
+                  <form method="post" action="/ui/matches" class="d-flex justify-content-end">
+                    <input type="hidden" name="entity_type" value="{{ x.entity_type }}">
+                    <input type="hidden" name="aquira_id" value="{{ x.aquira_id }}">
+                    <input type="hidden" name="hubspot_id" value="{{ x.hubspot_id }}">
+                    <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="remove-exclusion">Re-open pair</button>
+                  </form>
+                </td>
+              </tr>
+            {% else %}
+              <tr><td colspan="5" class="text-muted">No exclusions.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}

@@ -85,7 +85,11 @@ def test_normalize_contract_search_row():
         "EndDate": "2026-03-31T00:00:00",
         "SignDate": "2025-12-10T00:00:00",
         "NetAmount": 12500,
-        "Status": 2,
+        # Live row for CD 1070 (statuses probe, 2026-09-18): Status=1,
+        # IsActiveFlag=True — a booked active contract. The fixture's earlier
+        # Status=2 was invented under the old generic-vocabulary assumption.
+        "Status": 1,
+        "IsActiveFlag": True,
     }
     contract = normalize_contract(row)
     assert contract["AdvertiserID"] == 202
@@ -94,6 +98,7 @@ def test_normalize_contract_search_row():
     assert contract["TotalValue"] == 12500
     assert contract["StartDate"] == "2026-01-01"
     assert contract["IsContract"] is True
+    assert contract["IsActive"] is True
     assert contract["Name"] == "Park Cities Baptist"
 
 

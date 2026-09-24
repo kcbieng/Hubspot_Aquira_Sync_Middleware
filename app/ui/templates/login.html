@@ -13,6 +13,10 @@
         {% if error %}
           <div class="alert alert-danger" role="alert">{{ error }}</div>
         {% endif %}
+        {% if sso_available %}
+          <a class="btn btn-dark w-100 mb-3" href="/ui/sso">Sign in with Microsoft</a>
+          <div class="text-center text-muted small mb-3">— or local account —</div>
+        {% endif %}
         <form method="post" action="/ui/login" class="row g-3">
           <div class="col-12">
             <label class="form-label">Username</label>

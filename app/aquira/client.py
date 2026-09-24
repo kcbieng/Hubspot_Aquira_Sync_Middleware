@@ -31,6 +31,11 @@ SESSION_ERROR_NAMES = {
     "invalidsession",
 }
 
+# Verified against the live tenant and the raw /swagger/docs/v1 spec: every
+# Aquira enumeration returns exactly this many rows and the spec declares no
+# paging parameter for any of them.
+TRUNCATION_SENTINEL = 100
+
 
 class AquiraApiError(RuntimeError):
     def __init__(self, message: str, *, error: Any = None, error_name: str | None = None, errors: Any = None):
@@ -95,6 +100,8 @@ class AquiraSessionClient:
         self.logged_in = False
         self.version: str | None = None
         self._retrying = False
+        self.failed_calls: list[dict[str, Any]] = []
+        self.truncated_sources: list[str] = []
 
     def login(self) -> dict[str, Any]:
         user = (self.username or "").strip()
@@ -178,14 +185,27 @@ class AquiraSessionClient:
 
     def try_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | None:
         try:
-            return self.request(method, path, **kwargs)
+            payload = self.request(method, path, **kwargs)
         except Exception as exc:
             text = str(exc)
+            self.failed_calls.append(
+                {"method": method, "path": path, "error": type(exc).__name__, "message": text[:300]}
+            )
             if "HTTP 5" in text or " 500" in text:
                 logger.warning("Aquira %s %s failed: %s", method, path, exc)
             else:
                 logger.debug("Aquira %s %s skipped: %s", method, path, exc)
             return None
+        rows = len(list_from_envelope(payload))
+        if rows >= TRUNCATION_SENTINEL:
+            # The raw Swagger spec declares no paging parameter anywhere, and
+            # /Client/Get and /Contract/Get take no parameters at all, so a
+            # result that lands exactly on the server's cap is truncated and
+            # indistinguishable from a complete answer. Nothing may treat this
+            # pull as authoritative.
+            self.truncated_sources.append(f"{method} {path}")
+            logger.warning("Aquira %s %s returned %s rows — server cap, results truncated", method, path, rows)
+        return payload
 
     def heartbeat(self) -> bool:
         try:
@@ -293,10 +313,14 @@ class AquiraSessionClient:
         if get_all and list_from_envelope(get_all):
             payloads.append(get_all)
             logger.info("Client/Get returned %s rows", len(list_from_envelope(get_all)))
+        # Live semantics matrix: QSF 0-4 match no non-empty term at all; 5 is the
+        # numeric ClientCD, 6/7 name text, 8 matches either and is what this
+        # tenant's own UI (AppSettings.ClientQuickSearchField) uses. QSF=1 was
+        # silently dead — it only ever returned rows for the empty term.
         search = self.try_request(
             "POST",
             "/Client/Search",
-            json={"SearchTerm": search_term or "", "QuickSearchField": 1},
+            json={"SearchTerm": search_term or "", "QuickSearchField": 8},
         )
         if search and list_from_envelope(search):
             payloads.append(search)
@@ -361,6 +385,114 @@ class AquiraSessionClient:
         logger.info("Aquira search combined %s unique deals (%s booked, %s proposal)", len(by_id_map), booked, proposals)
         return list(by_id_map.values())
 
+    # Verified against the live tenant: every enumeration endpoint caps at
+    # TRUNCATION_SENTINEL rows, and none of them read any paging parameter —
+    # 23 single names + 12 combinations, as query string and as body fields,
+    # all return a byte-identical ID set. The /Forecast/Search OffSet crash at
+    # out-of-range offsets proves the probe would have found hidden paging.
+    # SearchByID inverts the cap: the CALLER chooses the ID list, so a batch of
+    # SWEEP_BATCH requested IDs can never reach the cap, and completeness
+    # becomes a checkable property instead of an assumption.
+    SWEEP_BATCH = 50
+    SWEEP_DEAD_TAIL_RUNS = 4  # stop only after 4 consecutive fully-dead batches
+    SWEEP_MAX_BATCHES = 400   # 20k-ID ceiling; hitting it is a partial sweep
+
+    def sweep_enumerate(self, resource: str) -> tuple[list[dict[str, Any]], bool]:
+        """Enumerate every existing {resource} row via SearchByID batches.
+
+        Returns (rows, complete). complete is False — and the source is flagged
+        in truncated_sources — whenever the tail of the ID space was not proven
+        dead, a batch came back cap-sized (the server ignored the ID list), or a
+        batch failed. Residual risk that cannot be eliminated from the outside:
+        a deletion burst of >200 IDs followed by creates at far higher IDs;
+        sequential ID allocation makes that effectively impossible.
+        """
+        path = f"/{resource}/SearchByID"
+
+        def ident_of(row: Any) -> int | None:
+            if not isinstance(row, dict):
+                return None
+            ident = row.get("ID") or row.get("Id") or row.get("id")
+            return int(ident) if str(ident or "").isdigit() else None
+
+        rows_by_id: dict[int, dict[str, Any]] = {}
+        powers = [2 ** k for k in range(0, 17)]
+        anchor = 0
+        probe = self.try_request("POST", path, json={"SearchIDs": powers})
+        if probe is not None:
+            anchor = max([a for a in (ident_of(row) for row in list_from_envelope(probe)) if a] or [0])
+        start = 1
+        empty_run = batches = 0
+        while batches < self.SWEEP_MAX_BATCHES:
+            ids = list(range(start, start + self.SWEEP_BATCH))
+            payload = self.try_request("POST", path, json={"SearchIDs": ids})
+            if payload is None:
+                break
+            batch_rows = list_from_envelope(payload)
+            if len(batch_rows) >= TRUNCATION_SENTINEL:
+                self.truncated_sources.append(
+                    f"POST {path} returned {len(batch_rows)} rows for {len(ids)} requested IDs "
+                    "(server ignored the ID list; sweep cannot self-certify)"
+                )
+                return list(rows_by_id.values()), False
+            for row in batch_rows:
+                ident = ident_of(row)
+                if ident is not None:
+                    rows_by_id[ident] = row
+            batches += 1
+            start += self.SWEEP_BATCH
+            if batch_rows:
+                empty_run = 0
+            else:
+                empty_run += 1
+                # rows_by_id must be non-empty: a tenant whose first live ID sits
+                # past the dead-tail window would otherwise be "proven" empty
+                # without the sweep having seen anything at all.
+                if (
+                    rows_by_id
+                    and empty_run >= self.SWEEP_DEAD_TAIL_RUNS
+                    and start - 1 >= 2 * anchor
+                ):
+                    logger.info("Aquira %s sweep complete: %s rows below %s", path, len(rows_by_id), start - 1)
+                    return list(rows_by_id.values()), True
+        self.truncated_sources.append(
+            f"POST {path} sweep stopped at ID {start - 1} unproven (anchor {anchor}, {batches} batches)"
+        )
+        logger.warning("Aquira %s sweep PARTIAL at ID %s (%s rows)", path, start - 1, len(rows_by_id))
+        return list(rows_by_id.values()), False
+
+    def enumerate_clients(self) -> tuple[list[dict[str, Any]], bool]:
+        rows, complete = self.sweep_enumerate("Client")
+        clients = [c for c in (normalize_client(row) for row in rows) if c and str(c.get("ID") or "").isdigit()]
+        if len(clients) < len(rows):
+            # A sweep row that will not normalize is an entity this run cannot see.
+            # "Complete enumeration" must mean ALL of it or it means nothing.
+            self.truncated_sources.append(
+                f"Client sweep: {len(rows) - len(clients)} SearchByID row(s) did not normalize"
+            )
+        if not clients and not complete:
+            # Sweep found nothing AND could not prove the table empty: fall back
+            # to the capped union so its truncation at least gets reported.
+            return self.search_clients(""), False
+        return clients, complete
+
+    def enumerate_contracts(self) -> tuple[list[dict[str, Any]], bool]:
+        rows, complete = self.sweep_enumerate("Contract")
+        contracts = [c for c in (normalize_contract(row) for row in rows) if c and str(c.get("ID") or "").isdigit()]
+        if len(contracts) < len(rows):
+            self.truncated_sources.append(
+                f"Contract sweep: {len(rows) - len(contracts)} SearchByID row(s) did not normalize"
+            )
+        booked = sum(1 for row in contracts if row.get("IsContract"))
+        proposals = sum(1 for row in contracts if row.get("IsProposal") and not row.get("IsContract"))
+        logger.info(
+            "Aquira contract sweep: %s deals (%s booked, %s proposal), complete=%s",
+            len(contracts), booked, proposals, complete,
+        )
+        if not contracts and not complete:
+            return self.search_contracts(""), False
+        return contracts, complete
+
     def load_spot_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         from_load = normalize_spot_lines(loaded) if loaded else []
         ident = int(contract_id) if str(contract_id).isdigit() else contract_id
@@ -423,12 +555,16 @@ class AquiraSessionClient:
                 by_id[str(rep["id"])] = rep
         return list(by_id.values())
 
-    def load_catalog(self, aquira_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+    def load_catalog(self, aquira_id: str | None = None) -> dict[str, Any]:
         if not self.logged_in:
             self.login()
-        clients = self.search_clients(aquira_id or "")
+        self.failed_calls = []
+        self.truncated_sources = []
+        clients_complete = True
         if aquira_id:
             clients = self.resolve_clients(aquira_id)
+        else:
+            clients, clients_complete = self.enumerate_clients()
         loaded_clients: list[dict[str, Any]] = []
         contacts: list[dict[str, Any]] = []
         clients_by_id: dict[int, dict[str, Any]] = {}
@@ -446,8 +582,9 @@ class AquiraSessionClient:
                 continue
             clients_by_id[int(merged["ID"])] = merged
 
-        contracts = self.search_contracts(aquira_id or "")
+        contracts_complete = True
         if aquira_id:
+            contracts = self.search_contracts(aquira_id)
             client_ids = {str(client_id) for client_id in clients_by_id}
             client_cds = {str(row.get("ClientCD") or "") for row in clients_by_id.values()}
             contracts = [
@@ -464,15 +601,23 @@ class AquiraSessionClient:
                 or str(contract.get("AdvertiserID")) in client_ids
                 or str(contract.get("ContractCD")) in client_cds
             ]
+        else:
+            contracts, contracts_complete = self.enumerate_contracts()
         loaded_contracts: list[dict[str, Any]] = []
         for contract in contracts:
+            detail_failed = False
             try:
                 loaded = self.load_contract(contract["ID"])
             except Exception as exc:
                 logger.warning("Contract/Load/%s failed: %s", contract.get("ID"), exc)
+                detail_failed = True
                 loaded = None
             merged = merge_contract(contract, loaded)
             if merged:
+                # A contract that appears in the pull but whose lines could not be
+                # read must never be allowed to prune HubSpot — zero periods out of
+                # a thin read is indistinguishable from "the flight moved months".
+                merged["_detail_failed"] = detail_failed
                 loaded_contracts.append(merged)
 
         for stub in clients_from_contracts(loaded_contracts):
@@ -492,7 +637,35 @@ class AquiraSessionClient:
             sum(1 for row in loaded_contracts if row.get("IsProposal") and not row.get("IsContract")),
             len(reps),
         )
-        return {"clients": loaded_clients, "contacts": contacts, "contracts": loaded_contracts, "reps": reps}
+        return {
+            "clients": loaded_clients,
+            "contacts": contacts,
+            "contracts": loaded_contracts,
+            "reps": reps,
+            "_integrity": {
+                "failed_reads": len(self.failed_calls),
+                "failed_calls": list(self.failed_calls),
+                "truncated_sources": list(self.truncated_sources),
+                "detail_failures": sum(1 for row in loaded_contracts if row.get("_detail_failed")),
+                "contract_rows": len(loaded_contracts),
+                "client_rows": len(loaded_clients),
+                "enumeration": {
+                    "clients_complete": clients_complete,
+                    "contracts_complete": contracts_complete,
+                },
+                # Aquira has no pagination, no totalCount and no modified-since. The
+                # SearchByID sweep is the only self-certifying enumeration, so a full
+                # run is authoritative only when both sweeps proved the ID tail dead.
+                # A targeted (aquira_id) run keeps completeness vacuously True because
+                # pruning is already scoped out by the caller.
+                "certified": (
+                    clients_complete
+                    and contracts_complete
+                    and not self.failed_calls
+                    and not self.truncated_sources
+                ),
+            },
+        }
 
     def update_client_sparse(self, aquira_id: str | int, fields: dict[str, Any]) -> dict[str, Any]:
         loaded = self.request("POST", f"/Client/Load/{aquira_id}")
@@ -546,11 +719,20 @@ class AquiraSessionClient:
             sparse["Version"] = entity.get("Version")
         return self.request("PUT", "/Client/Put", json={"Save": True, "Sparse": True, "Entity": sparse})
 
-    def create_client(self, fields: dict[str, Any]) -> dict[str, Any]:
+    def create_client(self, fields: dict[str, Any], party_type: str = "account") -> dict[str, Any]:
+        party = str(party_type or "").strip().lower()
+        is_advertiser = party in {"advertiser", "both"}
+        is_account = party in {"account", "both"} or not party
         created = self.try_request(
             "POST",
             "/Client/Create",
-            json={"Entity": {"Name": fields.get("Name"), "IsAccount": True, "IsAdvertiser": False}},
+            json={
+                "Entity": {
+                    "Name": fields.get("Name"),
+                    "IsAccount": is_account,
+                    "IsAdvertiser": is_advertiser,
+                }
+            },
         ) or self.request("POST", "/Client/Create", json={})
         draft = normalize_client(created) or {}
         ident = draft.get("ID")

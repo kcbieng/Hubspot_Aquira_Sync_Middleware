@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Access</div>
+        <h2 class="mb-0">Users</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      <strong>Admin</strong> gets settings, rules, teams, reps, users and sync runs. <strong>Sales</strong> signs in
+      straight to <a href="/ui/matches">Review matches</a> to link or dismiss suggested duplicates. The
+      env-configured admin account always works and is not listed here — this page can add people, never
+      lock the operator out.
+    </p>
+    <div class="table-responsive">
+      <table class="table align-middle">
+        <thead><tr><th>Email</th><th>Name</th><th>Role</th><th class="text-end">Actions</th></tr></thead>
+        <tbody>
+          {% for u in users %}
+            <tr>
+              <td><strong>{{ u.email }}</strong></td>
+              <td>{{ u.name }}</td>
+              <td><span class="badge text-bg-{% if u.role == 'admin' %}warning{% else %}light{% endif %}">{{ u.role }}</span></td>
+              <td>
+                <form method="post" action="/ui/users" class="d-flex gap-2 justify-content-end">
+                  <input type="hidden" name="email" value="{{ u.email }}">
+                  <input class="form-control form-control-sm" style="max-width: 180px" type="password" name="password" placeholder="new password (min 8)" autocomplete="new-password">
+                  <button class="btn btn-outline-secondary btn-sm" type="submit" name="action" value="reset">Reset password</button>
+                  <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete"
+                          onclick="return confirm('Remove {{ u.email }}?')">Remove</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="text-muted">No named users yet — add the sales team below.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <form method="post" action="/ui/users" class="border rounded p-3 bg-light">
+      <div class="fw-bold mb-2">Add a user</div>
+      <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+          <label class="form-label small mb-1" for="new_email">Email (this is the username)</label>
+          <input class="form-control form-control-sm" id="new_email" name="email" type="email" required>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small mb-1" for="new_name">Name</label>
+          <input class="form-control form-control-sm" id="new_name" name="name">
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small mb-1" for="new_role">Role</label>
+          <select class="form-select form-select-sm" id="new_role" name="role">
+            <option value="sales">Sales</option>
+            <option value="admin">Admin</option>
+          </select>
+        </div>
+        <div class="col-md-2">
+          <label class="form-label small mb-1" for="new_password">Password</label>
+          <input class="form-control form-control-sm" id="new_password" name="password" type="password" required autocomplete="new-password">
+        </div>
+        <div class="col-md-1">
+          <button class="btn btn-primary btn-sm w-100" type="submit" name="action" value="create">Add</button>
+        </div>
+      </div>
+      <div class="form-text">Sales users receive the daily digest only if their email matches their mapped
+        HubSpot user (Sales reps page) — otherwise unresolved matches fall back to the first admin's inbox.</div>
+    </form>
+  </div>
+{% endblock %}

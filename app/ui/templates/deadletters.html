@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="panel-card p-4 p-md-5 mb-4">
+    <div class="page-header">
+      <div>
+        <div class="text-uppercase small text-primary fw-bold mb-1">Operations</div>
+        <h2 class="mb-0">Dead letters</h2>
+      </div>
+    </div>
+    <p class="text-muted">
+      Individual records whose write failed during a live sync (HubSpot rejected it, association missing,
+      network error). <strong>Retry record</strong> queues a targeted live sync for that Aquira id — if it
+      succeeds the field diffs disappear on the next run, and you can mark the row resolved. If a whole run
+      failed, use Runs instead; these rows are per-record failures <em>inside</em> otherwise-live runs.
+    </p>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr><th>#</th><th>When</th><th>Entity</th><th>Aquira id</th><th>Attempts</th><th>Error</th><th class="text-end">Actions</th></tr>
+        </thead>
+        <tbody>
+          {% for row in rows %}
+            <tr>
+              <td class="small">{{ row.id }}</td>
+              <td class="small text-nowrap">{{ row.ts.strftime('%Y-%m-%d %H:%M') if row.ts else '—' }}</td>
+              <td class="small">{{ row.entity_type }}</td>
+              <td class="small">{{ row.aquira_id or '—' }}</td>
+              <td class="small">{{ row.attempts }}</td>
+              <td class="small text-danger" style="max-width: 40rem; word-break: break-word;">{{ row.error }}</td>
+              <td>
+                <form method="post" action="/ui/deadletters" class="d-flex gap-2 justify-content-end">
+                  <input type="hidden" name="row_id" value="{{ row.id }}">
+                  <button class="btn btn-outline-primary btn-sm" type="submit" name="action" value="retry">Retry record</button>
+                  <button class="btn btn-outline-danger btn-sm" type="submit" name="action" value="delete"
+                          onclick="return confirm('Mark dead letter #{{ row.id }} resolved and delete it?')">Resolved</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="7" class="text-muted">Nothing stuck. The quietest page in the app.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
