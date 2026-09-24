@@ -224,6 +224,89 @@ def test_sweep_fails_closed_when_a_batch_errors():
     assert any("unproven" in src for src in client.truncated_sources)
 
 
+def _aquira_tenant_client(existing_ids, vanishing=()):
+    """A fake that speaks this tenant's real SearchByID envelope, measured live
+    2026-09-24: HTTP 200 + Success:true + ErrorName:"None" (the enum's name for no
+    error) when at least one requested id exists, and Success:false +
+    ErrorName:"NotFound" + Error:-12 when the batch matches NOTHING. request()
+    translates the latter into a raise, which is what used to break the sweep.
+    `vanishing` ids stop existing after the opening doubling probe.
+    """
+    from app.aquira.client import AquiraApiError, AquiraSessionClient
+
+    client = AquiraSessionClient(base_url="http://aquira.invalid", username="u", password="p")
+    existing = set(existing_ids)
+    calls = {"n": 0}
+
+    def fake(method, path, **kwargs):
+        ids = [int(i) for i in (kwargs.get("json") or {}).get("SearchIDs") or []]
+        calls["n"] += 1
+        if calls["n"] > 1:
+            existing.difference_update(vanishing)
+        hits = sorted(set(ids) & existing)
+        if not hits:
+            raise AquiraApiError("no match", error=-12, error_name="NotFound")
+        return {"Success": True, "ErrorName": "None", "Data": [{"ID": i} for i in hits]}
+
+    client.request = fake
+    return client
+
+
+def test_sweep_certifies_the_tail_on_a_tenant_that_errors_on_zero_match_batches():
+    # THE production bug: every full run was PARTIAL, both resources, at the first
+    # fully-dead id range, because a zero-match batch is an error rather than an empty
+    # list. The sentinel id in each batch makes zero-match unreachable, so the dead
+    # tail is provable again and no call has to be forgiven.
+    live = set(range(1, 280)) - {17, 42, 99, 150, 200, 231, 240, 260}
+    client = _aquira_tenant_client(live)
+    rows, complete = client.sweep_enumerate("Client")
+    assert complete is True
+    assert {row["ID"] for row in rows} == live
+    assert client.truncated_sources == []
+    assert client.failed_calls == []
+
+
+def test_sweep_does_not_count_the_sentinel_row_as_a_live_hit():
+    # ids 1..60, anchor 32. Every tail batch echoes id 32; counting that echo as a hit
+    # would pin empty_run at 0 forever, so a 60-row tenant would burn 400 batches and
+    # then be reported PARTIAL.
+    client = _aquira_tenant_client(set(range(1, 61)))
+    rows, complete = client.sweep_enumerate("Client")
+    assert complete is True
+    assert len(rows) == 60
+
+
+def test_sweep_fails_closed_when_the_sentinel_is_deleted_mid_run():
+    # With the sentinel gone, a dead range is indistinguishable from a broken endpoint.
+    # PARTIAL is the only honest verdict — and what was already found is still returned.
+    client = _aquira_tenant_client(set(range(1, 280)), vanishing={256})
+    rows, complete = client.sweep_enumerate("Client")
+    assert complete is False
+    assert any("unproven" in src for src in client.truncated_sources)
+    assert len(rows) == 278
+
+
+def test_sweep_fails_closed_when_the_server_answers_ids_it_was_not_given():
+    # SearchByID is not row-capped (400 ids -> 279 rows on the live tenant), so the
+    # >=100-rows tripwire cannot be the integrity check. Returned ids must be a subset
+    # of requested ids or the sweep cannot self-certify at any batch size.
+    from app.aquira.client import AquiraSessionClient
+
+    client = AquiraSessionClient(base_url="http://aquira.invalid", username="u", password="p")
+
+    def fake(method, path, **kwargs):
+        # Never honors the id list: answers one id that was not requested, on every
+        # call including the opening doubling probe. The probe is validated for the
+        # same reason — an unchecked stray anchor would become a sentinel that absorbs
+        # every later stray.
+        return {"Success": True, "ErrorName": "None", "Data": [{"ID": 424242}]}
+
+    client.request = fake
+    _, complete = client.sweep_enumerate("Client")
+    assert complete is False
+    assert any("not requested" in src for src in client.truncated_sources)
+
+
 def test_unnormalizable_sweep_rows_are_reported_and_uncertify(monkeypatch):
     import app.aquira.client as aquira_client
 

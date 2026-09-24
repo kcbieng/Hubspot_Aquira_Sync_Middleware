@@ -400,12 +400,31 @@ class AquiraSessionClient:
     def sweep_enumerate(self, resource: str) -> tuple[list[dict[str, Any]], bool]:
         """Enumerate every existing {resource} row via SearchByID batches.
 
-        Returns (rows, complete). complete is False — and the source is flagged
-        in truncated_sources — whenever the tail of the ID space was not proven
-        dead, a batch came back cap-sized (the server ignored the ID list), or a
-        batch failed. Residual risk that cannot be eliminated from the outside:
-        a deletion burst of >200 IDs followed by creates at far higher IDs;
-        sequential ID allocation makes that effectively impossible.
+        Live-tenant fact that shapes this (probe 2026-09-24): a SearchByID batch in
+        which NO requested id exists is answered `HTTP 200` + `Success:false` +
+        `ErrorName:"NotFound"` + `Error:-12`, NOT with an empty Data list. request()
+        raises on Success:false, try_request returns None, and the loop used to break
+        right there — so the dead-tail proof could never be satisfied and EVERY full
+        run was reported PARTIAL at exactly the first fully-dead id range, for both
+        resources. Zero-match is now unreachable: each batch carries a sentinel id
+        known to exist (the doubling probe's high-water), so an all-dead range reads
+        as "only the sentinel came back" instead of as an error. Proven live: 49
+        non-existent ids + 1 live id -> Success:true, exactly the live row.
+
+        The sentinel is never counted as a hit (only ids inside the batch's own range
+        are), and it rides along as a legitimate row in the result set. If the sentinel
+        itself is deleted mid-run, its batch goes zero-match again, raises, and the
+        sweep fails closed as PARTIAL — the correct answer, since nothing can then tell
+        "deleted" from "endpoint broken".
+
+        Returns (rows, complete). complete is False — and the source is flagged in
+        truncated_sources — whenever the tail was not proven dead, a batch returned a
+        row whose id was not requested (the server is not honoring the ID list), or a
+        batch failed. Row count is NOT the tell: SearchByID is not row-capped (400
+        requested ids returned 279 rows), so the only sound integrity check is that the
+        returned ids are a subset of the requested ones. Residual risk that cannot be
+        eliminated from the outside: a deletion burst of >200 IDs followed by creates at
+        far higher IDs; sequential ID allocation makes that effectively impossible.
         """
         path = f"/{resource}/SearchByID"
 
@@ -416,32 +435,58 @@ class AquiraSessionClient:
             return int(ident) if str(ident or "").isdigit() else None
 
         rows_by_id: dict[int, dict[str, Any]] = {}
+
+        def hits_of(payload: dict[str, Any], allowed: set[int]) -> tuple[list[int | None], int]:
+            """Row ids plus the count of rows the server was NOT asked for — including
+            rows with no usable id, which cannot be attributed to a request either."""
+            idents = [ident_of(row) for row in list_from_envelope(payload)]
+            return idents, sum(1 for ident in idents if ident not in allowed)
+
         powers = [2 ** k for k in range(0, 17)]
         anchor = 0
         probe = self.try_request("POST", path, json={"SearchIDs": powers})
         if probe is not None:
-            anchor = max([a for a in (ident_of(row) for row in list_from_envelope(probe)) if a] or [0])
+            # The anchor is checked like any other batch: an id list the server did not
+            # honor here would otherwise become a sentinel that absorbs later strays.
+            idents, stray = hits_of(probe, set(powers))
+            if stray or len(idents) >= TRUNCATION_SENTINEL:
+                self.truncated_sources.append(
+                    f"POST {path} anchor probe returned {len(idents)} rows for {len(powers)} "
+                    f"requested IDs ({stray} not requested) — server ignored the ID list; "
+                    "sweep cannot self-certify"
+                )
+                return [], False
+            anchor = max([a for a in idents if a] or [0])
+        sentinel = anchor or None
         start = 1
         empty_run = batches = 0
         while batches < self.SWEEP_MAX_BATCHES:
             ids = list(range(start, start + self.SWEEP_BATCH))
-            payload = self.try_request("POST", path, json={"SearchIDs": ids})
+            in_batch = set(ids)
+            seed = sentinel if sentinel is not None and sentinel not in in_batch else None
+            payload = self.try_request(
+                "POST", path, json={"SearchIDs": [*ids, seed] if seed is not None else ids}
+            )
             if payload is None:
                 break
-            batch_rows = list_from_envelope(payload)
-            if len(batch_rows) >= TRUNCATION_SENTINEL:
+            requested = in_batch | ({seed} if seed is not None else set())
+            hits, stray = hits_of(payload, requested)
+            if stray or len(hits) >= TRUNCATION_SENTINEL:
                 self.truncated_sources.append(
-                    f"POST {path} returned {len(batch_rows)} rows for {len(ids)} requested IDs "
-                    "(server ignored the ID list; sweep cannot self-certify)"
+                    f"POST {path} returned {len(hits)} rows for {len(requested)} requested IDs "
+                    f"({stray} not requested) — server ignored the ID list; sweep cannot self-certify"
                 )
                 return list(rows_by_id.values()), False
-            for row in batch_rows:
-                ident = ident_of(row)
+            for row, ident in zip(list_from_envelope(payload), hits):
                 if ident is not None:
                     rows_by_id[ident] = row
             batches += 1
             start += self.SWEEP_BATCH
-            if batch_rows:
+            # A tenant with no power of two among its live ids leaves the doubling probe
+            # empty; adopt the highest id actually seen so the tail stays reachable.
+            if sentinel is None and rows_by_id:
+                sentinel = max(rows_by_id)
+            if sum(1 for ident in hits if ident in in_batch):
                 empty_run = 0
             else:
                 empty_run += 1

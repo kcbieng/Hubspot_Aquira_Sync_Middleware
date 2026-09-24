@@ -7,6 +7,7 @@ Run this locally where .env holds the real credentials:
     python scripts/conformance_probe.py pagination
     python scripts/conformance_probe.py sharding
     python scripts/conformance_probe.py ids
+    python scripts/conformance_probe.py tail
     python scripts/conformance_probe.py statuses
     python scripts/conformance_probe.py all
 
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -989,6 +991,515 @@ def probe_id_sweep() -> None:
 
 
 # --------------------------------------------------------------------------
+# SWEEP DEAD TAIL: can SearchByID prove the end of the ID space, and does the
+# sweep pull real data (not just ids)?
+# --------------------------------------------------------------------------
+
+# Fields that must survive normalize() for a sweep row to be usable at all.
+# Deliberately DERIVED names, not raw row keys: SearchByID rows are the same POCO
+# the capped /Get view returns (proven 2026-09-24), so Email/Contacts live in
+# /Client/Load, not here — reporting their raw absence as a FAIL was a false alarm.
+SWEEP_DERIVED_REQUIRED = {
+    "Client": ("ID", "Name"),
+    "Contract": ("ID", "ContractCD", "Status"),
+}
+
+# Raw SearchByID row keys that are NOT an integrity problem by themselves, because
+# load_catalog merges the per-record Load payload over the sweep row.
+SUPPLIED_BY_LOAD = ("Email", "Contacts", "Version", "Attributes")
+
+# Keys that could carry an owner, so a rep/team field that shows up only on the Load
+# payload is visible as such instead of being mistaken for a normalize bug.
+_OWNERISH_RE = re.compile(r"(?i)rep|team|sales|user|booked|owner|\bae\b|agent")
+
+# The envelope gotcha that made the first run of this section lie to itself: Aquira
+# answers SUCCESSFUL calls with ErrorName as the STRING "None" (the enum's name for
+# "no error"), while real failures carry ErrorName "NotFound" (Error -12) or
+# "InvalidArgument" (Error -27). Anything that treats a present ErrorName as a
+# failure marks every good batch dead, stops the ID map after 3 batches, and prints a
+# verdict contradicting its own http/Success columns. Ignore these.
+NO_ERROR_TOKENS = ("", "none", "null", "0")
+
+
+def probe_sweep_tail() -> None:
+    """Two questions this answers, both load-bearing for the enumeration spine.
+
+    (1) THE DEAD TAIL. app/aquira/client.py:sweep_enumerate certifies a complete
+    enumeration only after SWEEP_DEAD_TAIL_RUNS consecutive batches return ZERO rows.
+    That proof exists only if a zero-match batch comes back HTTP 200 with an empty
+    list. It does not go through httpx directly: every sweep call is try_request ->
+    request, and request RAISES when status >= 400 **or** payload["Success"] is False,
+    so try_request returns None. In sweep_enumerate `payload is None` breaks the loop
+    and appends truncated_sources — "sweep stopped unproven". The production log shows
+    BOTH resources going partial at exactly the first fully-dead ID range, which is
+    that signature. This section prints the server's verbatim answer for zero-match
+    batches (http status, Success, ErrorName/ErrorText) so the fix can match on it, and
+    tests the fix that answer implies: seed every batch with one id known to exist (a
+    sentinel) so zero-match is unreachable and an all-dead range reads as
+    "only the sentinel came back". The mixed 49-dead + 1-live call below is the
+    precondition for that; the sweep must also stop counting the sentinel as a hit.
+
+    (2) THE DATA PULL. A sweep row that only carries an ID is an enumeration, not a
+    pull. This reports the key union across every live SearchByID row, diffs it against
+    the capped /{Resource}/Get view, runs the real normalize_* over every sweep row, and
+    shows the booked/proposal/inactive split the run would have written — so "complete
+    enumeration" can be checked for content too.
+
+    Bonus: whether SearchByID is row-capped at all, and how many ids one call will take
+    (batch sizing drives run duration). The first run answered this: 400 requested ids
+    returned 279 rows, so it is NOT capped — which is why the app's integrity check is
+    now "every returned id was requested", not "rows < 100". That invariant is checked
+    here over every live batch.
+
+    READ-ONLY: SearchByID, /{Client,Contract}/Get, /Client/Search, /Contract/Lookup,
+    plus login/logout. No Edit/Put/Create/Delete.
+    """
+    s = _settings()
+    base = (s.aquira_base_url or "").rstrip("/")
+    if not (base and s.aquira_username and s.aquira_password):
+        print("TAIL: aquira credentials required")
+        return
+    client = httpx.Client(base_url=base, timeout=SHARD_TIMEOUT)
+    try:
+        login = client.post(
+            "/Session/Post", json={"Username": s.aquira_username, "Password": s.aquira_password}
+        ).json()
+    except Exception:
+        login = {}
+    if not login.get("Success", True):
+        print("  [FAIL] login refused")
+        client.close()
+        return
+    print("\n=== SWEEP DEAD TAIL + DATA PULL (reads only) ===")
+
+    BATCH = 50
+    SCAN_CEIL = 2500  # id ceiling for the live map; tenants above it need a wider probe
+
+    def call(resource: str, ids: list[int]) -> dict[str, Any]:
+        """One SearchByID call, described in full — the error text IS the answer."""
+        path = f"/{resource}/SearchByID"
+        out: dict[str, Any] = {"http": None, "Success": None, "rows": None, "row_dicts": []}
+        try:
+            r = client.request("POST", path, json={"SearchIDs": ids})
+        except Exception as exc:
+            out["error"] = f"{type(exc).__name__}: {str(exc)[:150]}"
+            return out
+        out["http"] = r.status_code
+        try:
+            payload = r.json()
+        except Exception:
+            out["error"] = "non-JSON " + (r.text or "")[:150].replace("\n", " ")
+            return out
+        if not isinstance(payload, dict):
+            out["error"] = f"json {type(payload).__name__}"
+            return out
+        out["Success"] = payload.get("Success")
+        rows = payload.get("Data")
+        if not isinstance(rows, list):
+            rows = payload.get("Items") if isinstance(payload.get("Items"), list) else []
+        out["rows"] = len(rows)
+        out["row_dicts"] = [row for row in rows if isinstance(row, dict)]
+        for key in ("ErrorName", "ErrorText", "Error"):
+            value = payload.get(key)
+            if value in (None, 0, "0", False):
+                continue
+            if isinstance(value, str) and value.strip().lower() in NO_ERROR_TOKENS:
+                continue  # "None" is this API's spelling of no-error
+            out[key] = str(value)[:200]
+        return out
+
+    def bad(res: dict[str, Any]) -> bool:
+        """Exactly what the app sees: request() raises on status >= 400 **or**
+        Success is False, try_request turns the raise into None, and None breaks the
+        sweep loop. A present-but-benign ErrorName ("None") is NOT a failure — the
+        first run of this section got that wrong and every line after it was noise."""
+        http = res.get("http")
+        return (
+            http is None
+            or (isinstance(http, int) and http >= 400)
+            or res.get("Success") is False
+            or res.get("error") is not None
+        )
+
+    def show(label: str, res: dict[str, Any]) -> None:
+        print(
+            f"    {label:<34} http={res.get('http')} Success={res.get('Success')} rows={res.get('rows')}"
+            + ("  -> app reads this as FAILED (sweep breaks)" if bad(res) else "")
+        )
+        for key in ("ErrorName", "ErrorText", "Error", "error"):
+            if key in res:
+                print(f"    {'':<34} {key}={res[key]!r}")
+
+    def ident_of(row: dict[str, Any]) -> int | None:
+        raw = row.get("ID") or row.get("Id") or row.get("id")
+        return int(raw) if str(raw).isdigit() else None
+
+    def shape(value: Any) -> str:
+        """Type + skeleton of a value, short enough to read one per line. What a field
+        IS (list of records? a display string? a FieldValue wrapper?) is the only way to
+        tell why normalize finds nothing in a key that is plainly present."""
+        if isinstance(value, list):
+            return f"list[{len(value)}]{{{'empty' if not value else shape(value[0])}}}"
+        if isinstance(value, dict):
+            return "dict{" + ",".join(sorted(str(k) for k in value)[:8]) + "}"
+        if isinstance(value, str):
+            return f"str:{value[:60]!r}"
+        return f"{type(value).__name__}:{value!r}"
+
+    # load_catalog also pulls the rep roster, and app/mapping/owners.py:expand_owner_lookup
+    # indexes each rep by BOTH its User/Lookup ID and its SalesRepID (plus name). So a
+    # record's SalesRepID only resolves to a HubSpot owner if it is in that combined key
+    # set — the two id spaces are not the same and printing only one of them would make
+    # a valid rep id look unknown.
+    rep_ids: set[str] = set()
+    rep_sales_ids: set[str] = set()
+    rep_names: set[str] = set()
+    try:
+        r = client.request("POST", "/User/Lookup", json={
+            "salesReps": True, "CurrentOnly": True, "SearchTerm": "",
+        })
+        p = r.json() if r.content else {}
+        rep_rows = [row for row in ((p or {}).get("Data") or []) if isinstance(row, dict)]
+        for row in rep_rows:
+            for key in ("ID", "Id"):
+                if row.get(key) not in (None, ""):
+                    rep_ids.add(str(row[key]))
+            if row.get("SalesRepID") not in (None, ""):
+                rep_sales_ids.add(str(row["SalesRepID"]))
+            for key in ("Name", "LongName"):
+                if row.get(key):
+                    rep_names.add(str(row[key]).strip().lower())
+        print(f"\n  [INFO] /User/Lookup(salesReps) http={r.status_code} rows={len(rep_rows)}")
+        print(f"  [INFO] roster User/Lookup IDs  = {sorted(rep_ids, key=lambda s: int(s) if s.isdigit() else 0)}")
+        print(f"  [INFO] roster SalesRepIDs      = {sorted(rep_sales_ids, key=lambda s: int(s) if s.isdigit() else 0)}")
+        print(f"  [INFO] roster names            = {sorted(rep_names)}")
+        if rep_rows:
+            print(f"  [INFO] rep row keys: {sorted(rep_rows[0])}")
+    except Exception as exc:
+        print(f"\n  [INFO] /User/Lookup(salesReps) -> {type(exc).__name__}")
+    rep_all_ids = rep_ids | rep_sales_ids
+
+    for resource in ("Client", "Contract"):
+        print(f"\n  --- /{resource}/SearchByID ---")
+
+        # (1) map the live id space, batch by batch, the way the sweep does. A
+        # zero-match batch is an ERROR for this API (see the shapes below), so an
+        # empty batch and a failed batch both legitimately mean "150 dead ids".
+        live: dict[int, dict[str, Any]] = {}
+        profile: list[str] = []
+        stray_ids: list[Any] = []
+        empties = 0
+        scanned = 0
+        start = 1
+        while start <= SCAN_CEIL:
+            ids = list(range(start, start + BATCH))
+            res = call(resource, ids)
+            n = res.get("rows") or 0
+            scanned += 1
+            returned = [ident_of(row) for row in res.get("row_dicts", [])]
+            stray_ids.extend(a for a in returned if a not in set(ids))
+            profile.append(f"{start}-{start + BATCH - 1}:{n}{'!' if bad(res) else ''}")
+            for row in res.get("row_dicts", []):
+                ident = ident_of(row)
+                if ident is not None:
+                    live[ident] = row
+            empties = 0 if (n and not bad(res)) else empties + 1
+            if live and empties >= 3:
+                break
+            start += BATCH
+        if not live:
+            print(f"  [FAIL] no live {resource} ids found in {scanned} batches up to "
+                  f"{start + BATCH - 1} — cannot probe the tail. SearchByID is unusable here; "
+                  "the enumeration spine must come from elsewhere.")
+            continue
+        low, high = min(live), max(live)
+        stopped = ("after 3 consecutive dead batches — the real tail" if empties >= 3
+                   else f"at the {SCAN_CEIL} id scan ceiling — tail UNKNOWN")
+        print(f"  [INFO] {resource}: {len(live)} live ids, range {low}..{high}; map stopped {stopped} "
+              f"(id {start + BATCH - 1}, {scanned} batches)")
+        print(f"  [INFO] rows per batch of {BATCH} ('!' = the app's try_request returns None, sweep breaks):")
+        for i in range(0, len(profile), 6):
+            print(f"           {'  '.join(profile[i:i + 6])}")
+
+        # The invariant sweep_enumerate now certifies on: the server must answer ONLY
+        # ids it was handed. One stray means the ID list is being ignored, which is
+        # uncountable by construction — and row count alone can never show it, because
+        # SearchByID is not row-capped.
+        _show(f"{resource}: SearchByID honoured the id list on every batch", not stray_ids,
+              f"{len(stray_ids)} stray row id(s): {stray_ids[:8]}" if stray_ids
+              else f"{scanned} batches, every returned id was requested")
+
+        # (2) THE question: a batch in which no id exists, at the exact place the
+        # sweep would meet it — the first all-dead range above high-water.
+        first_dead = ((high - 1) // BATCH + 1) * BATCH + 1
+        print("  dead-tail shapes (what sweep_enumerate needs to survive):")
+        tail = call(resource, list(range(first_dead, first_dead + BATCH)))
+        show(f"zero-match {first_dead}..{first_dead + BATCH - 1}", tail)
+        show("zero-match 5 far ids", call(resource, [90001, 90002, 90003, 90004, 90005]))
+        show("zero-match single id", call(resource, [97000]))
+        show("zero-match out-of-range 1e9", call(resource, [10 ** 9]))
+        show("empty SearchIDs []", call(resource, []))
+        sentinel = high
+        mixed_ids = [sentinel] + [i for i in range(90001, 90051) if i != sentinel][:49]
+        mixed = call(resource, mixed_ids)
+        show(f"sentinel {sentinel} + 49 dead", mixed)
+        mixed_hits = [ident_of(row) for row in mixed.get("row_dicts", [])]
+        print(f"           mixed batch returned ids {mixed_hits} (want exactly [{sentinel}]) — "
+              "this is the fix's precondition")
+        # And the same batch with the sentinel deleted, which is how the sweep fails
+        # closed: if the sentinel stops answering, nothing distinguishes "deleted"
+        # from "endpoint broken", so PARTIAL is the only honest verdict.
+        show("sentinel-only batch (high id)", call(resource, [sentinel]))
+
+        if not bad(tail) and tail.get("rows") == 0:
+            print(f"  [VERDICT] {resource}: a zero-match batch IS HTTP 200 + empty Data, so the "
+                  "dead-tail proof is satisfiable as written. The production PARTIAL came from "
+                  "something else — the '!' batches and the shapes above name it.")
+        elif bad(tail):
+            print(f"  [VERDICT] {resource}: a zero-match batch is answered as an ERROR "
+                  f"(http={tail.get('http')} Success={tail.get('Success')} "
+                  f"ErrorName={tail.get('ErrorName')!r} Error={tail.get('Error')!r}), so "
+                  "try_request returns None, the sweep loop breaks and appends "
+                  "truncated_sources. The tail can NEVER be proven: every full run is "
+                  "PARTIAL by construction, for both resources, at the first fully-dead "
+                  "id range — exactly the production warning.")
+        else:
+            print(f"  [UNEXPECTED] {resource}: zero-match batch is not an error but returned "
+                  f"{tail.get('rows')} rows — the id map is wrong; report verbatim.")
+        if bad(tail) and not bad(mixed) and mixed_hits == [sentinel]:
+            print(f"  [NEXT] {resource}: sentinel batches work, so the fix is what sweep_enumerate "
+                  "now does — seed every batch with one id known to exist (the doubling probe's "
+                  "high-water) and do not count that row as a hit. Zero-match becomes "
+                  "unreachable and the 4-empty-run proof becomes real. The alternative "
+                  "(teach try_request to read this exact ErrorName as 'no rows') is weaker: it "
+                  "trusts one tenant's error vocabulary and would mask a genuine outage.")
+
+        # (3) is the sweep a DATA pull or just an id list? Judge the NORMALIZED
+        # output, not the raw row keys: load_catalog merges /{Resource}/Load over
+        # every sweep row, so a row without Email or Contacts is by design. What
+        # would be a real defect is a row that will not normalize at all.
+        seen: set[str] = set()
+        for row in live.values():
+            seen.update(row)
+        print(f"  [INFO] {resource}: union of sweep-row keys = {len(seen)}: {sorted(seen)}")
+        absent_raw = [k for k in SWEEP_DERIVED_REQUIRED[resource] if k not in seen]
+        if absent_raw:
+            print(f"  [INFO] {resource}: raw keys {absent_raw} are not on the sweep row — normalize "
+                  "reaches them through aliases or the per-record Load; the derived check below is "
+                  "the one that matters.")
+
+        from app.aquira.normalize import normalize_client, normalize_contract
+
+        fn = normalize_client if resource == "Client" else normalize_contract
+        norm = [fn(row) for row in live.values()]
+        ok = [n for n in norm if n]
+        _show(f"{resource}: normalize() accepts sweep rows", len(ok) == len(live),
+              f"{len(ok)}/{len(live)} rows" + ("" if len(ok) == len(live) else
+              f" — {len(live) - len(ok)} row(s) would be invisible to the run"))
+        holes = [
+            f"{key}={sum(1 for c in ok if c.get(key))}" for key in SWEEP_DERIVED_REQUIRED[resource]
+        ]
+        blank = [h for h in holes if h.endswith("=0")]
+        _show(f"{resource}: sweep rows carry usable data", not blank,
+              " ".join(holes) + (f"  <- {blank} empty on EVERY row" if blank else ""))
+        try:
+            get_rows = client.request("GET", f"/{resource}/Get").json()
+            get_keys: set[str] = set()
+            for row in (get_rows.get("Data") if isinstance(get_rows, dict) else None) or []:
+                if isinstance(row, dict):
+                    get_keys.update(row)
+            only_get = sorted(get_keys - seen)
+            print(f"  [INFO] {resource}: fields the capped /{resource}/Get view has but the "
+                  f"sweep rows do NOT ({len(only_get)}): {only_get}")
+            print(f"  [INFO] {resource}: sweep-only fields (SearchByID enrichment): "
+                  f"{sorted(seen - get_keys)}")
+        except Exception as exc:
+            print(f"  [INFO] {resource}: /{resource}/Get comparison skipped ({type(exc).__name__})")
+
+        load_needing = [k for k in SUPPLIED_BY_LOAD if k not in seen]
+        if resource == "Client" and ok:
+            print(f"  [INFO] Client pull: named={sum(1 for c in ok if c.get('Name'))} "
+                  f"email={sum(1 for c in ok if c.get('Email'))} "
+                  f"phone={sum(1 for c in ok if c.get('Phone'))} "
+                  f"contacts={sum(len(c.get('Contacts') or []) for c in ok)} "
+                  f"account={sum(1 for c in ok if c.get('IsAccount'))} "
+                  f"advertiser={sum(1 for c in ok if c.get('IsAdvertiser'))} "
+                  f"rep-id={sum(1 for c in ok if c.get('SalesRepID'))} "
+                  f"rep-name={sum(1 for c in ok if c.get('SalesRepName'))} "
+                  f"teams={sum(1 for c in ok if c.get('SalesTeams'))} "
+                  f"-> {len(load_needing)} field(s) only /Client/Load can supply {load_needing}")
+        if resource == "Contract" and ok:
+            print(f"  [INFO] Contract pull: booked={sum(1 for c in ok if c.get('IsContract'))} "
+                  f"proposal={sum(1 for c in ok if c.get('IsProposal') and not c.get('IsContract'))} "
+                  f"cancelled={sum(1 for c in ok if c.get('Cancelled'))} "
+                  f"inactive={sum(1 for c in ok if c.get('IsActive') is False)} "
+                  f"active-unknown={sum(1 for c in ok if c.get('IsActive') is None)} "
+                  f"with-total={sum(1 for c in ok if c.get('TotalValue'))} "
+                  f"with-dates={sum(1 for c in ok if c.get('StartDate') and c.get('EndDate'))} "
+                  f"with-lines={sum(1 for c in ok if c.get('lines'))} "
+                  f"rep={sum(1 for c in ok if c.get('SalesRepID') or c.get('SalesRepName'))} "
+                  f"teams={sum(1 for c in ok if c.get('SalesTeams'))}")
+            if not any(c.get("lines") for c in ok):
+                print(f"  [INFO] {resource}: sweep rows carry NO line data (keys include "
+                      f"{sorted(k for k in seen if 'Line' in k or 'Spot' in k)}) — revenue periods "
+                      "must still come from GetContractDetailAnalysis/GetSpotLineDetailAnalysis per "
+                      "contract, so the sweep cannot replace the per-record detail reads.")
+
+        # (4) is SearchByID row-capped, and how large may a batch be? Run duration and
+        # the app's integrity check both hinge on this. An exact 100 rows is NOT the
+        # tell (100 requested ids can all be live); the tell is rows vs the live ids
+        # already known to sit inside the requested range.
+        print(f"  [INFO] {resource}: batch sizing (rows vs live ids known in range):")
+        widest = 0
+        truncated_at = 0
+        for size in (50, 100, 200, 400, 800):
+            expect = sum(1 for a in live if a <= size)
+            res = call(resource, list(range(1, size + 1)))
+            n = res.get("rows")
+            note = ""
+            if isinstance(n, int):
+                if n < expect:
+                    note = f"  <- TRUNCATED: {expect - n} of {expect} live ids in range unanswered"
+                    truncated_at = max(truncated_at, n)
+                else:
+                    widest = max(widest, n)
+            print(f"           {size:>4} ids -> http={res.get('http')} Success={res.get('Success')} "
+                  f"rows={n} live-in-range={expect}{note}")
+        if widest > TRUNCATION_SENTINEL:
+            print(f"  [VERDICT] {resource}: SearchByID is NOT row-capped — one call answered "
+                  f"{widest} rows. So a rows>=100 tripwire on THIS endpoint is a false positive, and "
+                  "the only sound integrity check is returned-ids ⊆ requested-ids (checked above, and "
+                  "now what sweep_enumerate certifies). SWEEP_BATCH is a duration knob, not a "
+                  "correctness knob.")
+        elif truncated_at:
+            print(f"  [VERDICT] {resource}: SearchByID DID truncate at {truncated_at} rows — keep "
+                  f"SWEEP_BATCH <= 50 and keep the row-count tripwire.")
+        else:
+            print(f"  [INFO] {resource}: no batch answered more than {TRUNCATION_SENTINEL} rows, so "
+                  "this run cannot settle the cap. Keep SWEEP_BATCH <= 50 (safe either way).")
+
+        # (5) is an empty result set this API's general behavior, or SearchByID-specific?
+        try:
+            r = client.request("POST", "/Client/Search", json={
+                "SearchTerm": "zzqx no such client zzqx", "QuickSearchField": 8,
+                "IncludeActive": True, "IncludeInactive": True,
+            })
+            p = r.json() if r.content else {}
+            p = p if isinstance(p, dict) else {}
+            print(f"  [INFO] control /Client/Search no-match -> http={r.status_code} "
+                  f"Success={p.get('Success')} rows={_count(p, 'Data')} "
+                  f"ErrorName={str(p.get('ErrorName'))[:80]!r}")
+        except Exception as exc:
+            print(f"  [INFO] control /Client/Search no-match -> {type(exc).__name__}")
+        try:
+            r = client.request("POST", "/Contract/Lookup", json={"SearchTerm": "", "IncludeStatuses": [99]})
+            p = r.json() if r.content else {}
+            p = p if isinstance(p, dict) else {}
+            print(f"  [INFO] control /Contract/Lookup status 99 -> http={r.status_code} "
+                  f"Success={p.get('Success')} rows={_count(p, 'Data')} "
+                  f"ErrorName={str(p.get('ErrorName'))[:80]!r}")
+        except Exception as exc:
+            print(f"  [INFO] control /Contract/Lookup status 99 -> {type(exc).__name__}")
+
+        # (6) The counts above say rep-id=0 and rep-name=0 on EVERY client row even
+        # though SalesReps and SalesTeams are keys on that row, and rep=0/teams=0 on
+        # every contract row. Either the value is a shape normalize does not read
+        # (fixable with an alias) or Aquira genuinely does not fill it (not our bug).
+        # So dump the SHAPES, then re-ask the question the way load_catalog actually
+        # assembles a record: sweep row -> normalize -> /{Resource}/Load -> normalize
+        # -> merge_*, because a field blank on the summary can arrive with the Load.
+        print(f"  [INFO] {resource}: owner/team-ish fields on sweep rows (shape, not just presence):")
+        for key in ("SalesReps", "SalesTeams", "SalesTeam", "BookedBy", "CopyWriter",
+                    "Type", "Account", "Advertiser", "Status"):
+            present = [row for row in live.values() if key in row]
+            if not present:
+                continue
+            blank = sum(1 for row in present if row[key] in (None, "", [], {}, 0, False))
+            print(f"           {key:<11} on {len(present):>4}/{len(live)} rows, blank on {blank:>4}, "
+                  f"e.g. {shape(present[0][key])}")
+
+        ordered = sorted(live)
+        sample_ids = sorted({low, high, ordered[len(ordered) // 3], ordered[2 * len(ordered) // 3]})
+        print(f"  [INFO] {resource}: assembled record for {len(sample_ids)} sampled ids "
+              f"({sample_ids}) — sweep row -> /{resource}/Load -> merge:")
+        from app.aquira.normalize import entity_of, merge_client, merge_contract
+
+        merge = merge_client if resource == "Client" else merge_contract
+        got_rep = got_teams = resolvable = sampled = 0
+        for ident in sample_ids:
+            try:
+                if resource == "Client":
+                    lp = client.request("POST", f"/Client/Load/{ident}").json()
+                else:
+                    lp = client.request("POST", f"/Contract/Load/{ident}", json={"name": "probe"}).json()
+            except Exception as exc:
+                print(f"           id {ident}: /{resource}/Load raised {type(exc).__name__}")
+                continue
+            if not isinstance(lp, dict):
+                print(f"           id {ident}: /{resource}/Load returned {type(lp).__name__}")
+                continue
+            summary = fn(live[ident]) or {}
+            merged = merge(summary, fn(lp)) or summary
+            rep = merged.get("SalesRepID") or merged.get("SalesRepName")
+            rep_id = merged.get("SalesRepID")
+            teams = merged.get("SalesTeams") or []
+            sampled += 1
+            got_rep += 1 if rep else 0
+            got_teams += 1 if teams else 0
+            if rep_id is not None and str(rep_id) in rep_all_ids:
+                resolvable += 1
+            load_keys = set(entity_of(lp)) - set(live[ident])
+            repish = sorted(k for k in load_keys if _OWNERISH_RE.search(str(k)))
+            note = f"  Load-only owner-ish keys={repish}" if repish else ""
+            if rep_id is not None:
+                note += (f"  SalesRepID={rep_id!r} "
+                         f"in-roster={str(rep_id) in rep_all_ids}")
+            if resource == "Contract":
+                booked_by = live[ident].get("BookedBy")
+                if booked_by not in (None, "", 0):
+                    # BookedBy is a display NAME on this tenant's rows, not a user id.
+                    # Compare like for like or the check reads False whoever it names;
+                    # plan_deals never looks at this field, so it is context only.
+                    note += (f"  BookedBy={shape(booked_by)} "
+                             f"name-in-roster={str(booked_by).strip().lower() in rep_names}")
+            print(f"           id {ident}: MERGED rep={rep!r} teams={len(teams)}{note}")
+        _show(f"{resource}: assembled record carries a sales rep", got_rep > 0,
+              f"{got_rep}/{sampled} sampled ids")
+        _show(f"{resource}: assembled record carries team names", got_teams > 0,
+              f"{got_teams}/{sampled} sampled ids")
+        _show(f"{resource}: that rep id resolves to a HubSpot owner", resolvable > 0,
+              f"{resolvable}/{sampled} sampled ids hit the /User/Lookup roster (User.ID ∪ "
+              f"SalesRepID) — the rest need an owner-map row (app/mapping/owners.py:"
+              f"expand_owner_lookup) or the team->owner map, or the deal lands unowned")
+        if sampled and rep_all_ids and resolvable < sampled:
+            print(f"  [NEXT] {resource}: the roster call is filtered salesReps+CurrentOnly, so a "
+                  "manager, a copywriter, or an off-roster rep id will not resolve from /User/Lookup "
+                  "alone. Those records need an admin owner-map row or a team mapping; check the "
+                  "owners page covers the ids printed above.")
+        if sampled and not got_rep and not got_teams:
+            print(f"  [NEXT] {resource}: neither the sweep row nor /{resource}/Load yields an owner "
+                  "OR a team, so HubSpot deals land unowned and the owner-map cannot match by team. "
+                  "The shapes above decide whether normalize.py needs an alias or this tenant does "
+                  "not fill the field.")
+        elif sampled and not got_rep and got_teams:
+            print(f"  [NEXT] {resource}: teams resolve, rep does not. Deal ownership is keyed on the "
+                  "CONTRACT's SalesRepID (app/sync/planner.py:433-435 -> owner_by_aquira_user), "
+                  "falling back to a hubspot_owner_id the team map may have set "
+                  "(app/mapping/teams.py:379). So rep=0 on the assembled record means deals are "
+                  "owned only through team->owner, and only for teams the admin mapped. The shapes "
+                  "above say whether normalize.py needs an alias (BookedBy/UserID/SalesReps shape) "
+                  "or this tenant leaves the rep genuinely blank.")
+
+    print("  [NEXT] Paste this whole section back. The dead-tail VERDICT/NEXT lines and the "
+          "owner/team block at the end of each resource are the parts the code depends on.")
+    try:
+        client.delete("/Session/Delete")
+    except Exception:
+        pass
+    client.close()
+
+
+# --------------------------------------------------------------------------
 # STATUS DOMAIN: which IncludeStatuses codes exist and what they mean
 # --------------------------------------------------------------------------
 def probe_statuses() -> None:
@@ -1188,6 +1699,8 @@ def main() -> int:
         probe_sharding()
     if which in {"all", "ids"}:
         probe_id_sweep()
+    if which in {"all", "tail"}:
+        probe_sweep_tail()
     if which in {"all", "statuses"}:
         probe_statuses()
     print("\nDone. Paste this whole output back. It contains no credentials.")
