@@ -36,13 +36,46 @@ SESSION_ERROR_NAMES = {
 # paging parameter for any of them.
 TRUNCATION_SENTINEL = 100
 
+# This API answers "that record does not exist" as an envelope (Success:false +
+# ErrorName:"NotFound" + Error:-12), never as an empty list — measured live on
+# SearchByID zero-match batches 2026-09-24. An answer like that is a COMPLETE
+# read that happened to hold nothing, so it must not be weighed against the
+# pull's completeness; a 5xx or a transport failure must.
+ABSENT_ANSWER_ERROR_NAMES = {"notfound", "recordnotfound", "nosuchrecord", "notfounderror"}
+
 
 class AquiraApiError(RuntimeError):
-    def __init__(self, message: str, *, error: Any = None, error_name: str | None = None, errors: Any = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        error: Any = None,
+        error_name: str | None = None,
+        errors: Any = None,
+        status_code: int | None = None,
+    ):
         super().__init__(message)
         self.error = error
         self.error_name = error_name
         self.errors = errors
+        self.status_code = status_code
+
+
+def _failure_shape(exc: Exception, *, optional: bool) -> str:
+    """Classify a swallowed read as "absent" (harmless) or "critical" (pull damage).
+
+    Only a read the caller declared speculative can be forgiven, and only when the
+    server itself answered with a not-found envelope. Everything else — transport,
+    timeout, 5xx, validation, session — stays critical, so making a call optional can
+    never hide a real outage.
+    """
+    if not optional or not isinstance(exc, AquiraApiError):
+        return "critical"
+    status = exc.status_code
+    if status is not None and status >= 500:
+        return "critical"
+    name = str(exc.error_name or "").strip().lower()
+    return "absent" if name in ABSENT_ANSWER_ERROR_NAMES else "critical"
 
 
 def _clean_secret(value: str) -> str:
@@ -180,22 +213,58 @@ class AquiraSessionClient:
                 error=payload.get("Error"),
                 error_name=payload.get("ErrorName"),
                 errors=payload.get("Errors"),
+                status_code=response.status_code,
             )
         return validate_response(payload)
 
-    def try_request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | None:
+    def try_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        optional: bool = False,
+        cap_check: bool = True,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        """Read that may legitimately come back with nothing.
+
+        ``optional=True`` marks the call as one of this client's deliberate guesses
+        (a fallback endpoint, a contact list that may be empty). Its not-found answer
+        is recorded with shape="absent" and cannot uncertify the pull; every other
+        failure shape stays critical whatever the caller declared.
+
+        ``cap_check=False`` turns off the row-cap sentinel. That sentinel is a claim
+        about *enumerations* — a list that lands on the server's cap is truncated and
+        indistinguishable from a complete answer. Per-record detail reads are not
+        enumerations: one contract's spot log legitimately returns hundreds of rows
+        (measured live: 657), so counting them against the cap would report a complete
+        read as truncation and withhold certification from the run that produced it.
+        """
         try:
             payload = self.request(method, path, **kwargs)
         except Exception as exc:
             text = str(exc)
+            shape = _failure_shape(exc, optional=optional)
             self.failed_calls.append(
-                {"method": method, "path": path, "error": type(exc).__name__, "message": text[:300]}
+                {
+                    "method": method,
+                    "path": path,
+                    "error": type(exc).__name__,
+                    "error_name": getattr(exc, "error_name", None),
+                    "http": getattr(exc, "status_code", None),
+                    "shape": shape,
+                    "message": text[:300],
+                }
             )
-            if "HTTP 5" in text or " 500" in text:
+            if shape == "absent":
+                logger.debug("Aquira %s %s answered no rows: %s", method, path, exc)
+            elif "HTTP 5" in text or " 500" in text:
                 logger.warning("Aquira %s %s failed: %s", method, path, exc)
             else:
                 logger.debug("Aquira %s %s skipped: %s", method, path, exc)
             return None
+        if not cap_check:
+            return payload
         rows = len(list_from_envelope(payload))
         if rows >= TRUNCATION_SENTINEL:
             # The raw Swagger spec declares no paging parameter anywhere, and
@@ -240,6 +309,7 @@ class AquiraSessionClient:
         payload = self.try_request(
             "POST",
             "/Client/LookupContacts",
+            optional=True,
             json={"id": ident, "name": "lookup-contacts"},
         )
         if not payload:
@@ -541,14 +611,21 @@ class AquiraSessionClient:
     def load_spot_lines(self, contract_id: str | int, loaded: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         from_load = normalize_spot_lines(loaded) if loaded else []
         ident = int(contract_id) if str(contract_id).isdigit() else contract_id
-        attempts = [
-            ("POST", "/Contract/GetSpotLineDetailAnalysis", {"id": ident, "ID": ident, "name": "spot-lines"}),
-            ("POST", "/Contract/LoadSpotline", {"ContractID": ident, "name": "spotline"}),
-        ]
-        for method, path, body in attempts:
-            payload = self.try_request(method, path, json=body)
-            if not payload:
-                continue
+        # /Contract/LoadSpotline used to be guessed here. Its spec body is
+        # {"ContractID", "SpotlineID"} — it loads ONE spotline, and the contract only
+        # carries spotline *summary* rows (already read from `loaded` above) — so
+        # calling it with a contract id alone answers Success:false +
+        # ErrorName:"NotFound" for every contract on the live tenant, including ones
+        # with 600+ spots. That one guaranteed failure per line-less contract is what
+        # held `certified` False, and pruning with it.
+        payload = self.try_request(
+            "POST",
+            "/Contract/GetSpotLineDetailAnalysis",
+            optional=True,
+            cap_check=False,
+            json={"id": ident, "ID": ident, "name": "spot-lines"},
+        )
+        if payload:
             lines = normalize_spot_lines(payload)
             if lines:
                 return lines
@@ -562,6 +639,8 @@ class AquiraSessionClient:
         payload = self.try_request(
             "POST",
             "/Contract/GetContractDetailAnalysis",
+            optional=True,
+            cap_check=False,
             json={"ID": ident, "id": ident, "RevenueDateType": 0, "name": "detail"},
         )
         return normalize_charge_lines(payload) if payload else []
@@ -571,6 +650,8 @@ class AquiraSessionClient:
         payload = self.try_request(
             "POST",
             "/Contract/GetContractDetailAnalysis",
+            optional=True,
+            cap_check=False,
             json={"ID": ident, "id": ident, "RevenueDateType": 0, "name": "detail"},
         )
         return normalize_revenue_months(payload) if payload else []
@@ -590,7 +671,7 @@ class AquiraSessionClient:
             self.login()
         payload = self.try_request("POST", "/User/Lookup", json={"salesReps": True, "CurrentOnly": True, "SearchTerm": ""})
         if not payload:
-            payload = self.try_request("POST", "/User/Lookup", json={"salesReps": True})
+            payload = self.try_request("POST", "/User/Lookup", optional=True, json={"salesReps": True})
         if not payload:
             return []
         by_id: dict[str, dict[str, Any]] = {}
@@ -649,6 +730,7 @@ class AquiraSessionClient:
         else:
             contracts, contracts_complete = self.enumerate_contracts()
         loaded_contracts: list[dict[str, Any]] = []
+        contracts_with_revenue = 0
         for contract in contracts:
             detail_failed = False
             try:
@@ -657,11 +739,28 @@ class AquiraSessionClient:
                 logger.warning("Contract/Load/%s failed: %s", contract.get("ID"), exc)
                 detail_failed = True
                 loaded = None
+            if loaded and loaded.get("lines"):
+                contracts_with_revenue += 1
             merged = merge_contract(contract, loaded)
             if merged:
                 # A contract that appears in the pull but whose lines could not be
                 # read must never be allowed to prune HubSpot — zero periods out of
                 # a thin read is indistinguishable from "the flight moved months".
+                # The same hold applies when the sweep row states money and not one
+                # line came back: the record is not empty, our read of it is.
+                if not detail_failed and not (loaded or {}).get("lines"):
+                    try:
+                        stated = float(contract.get("TotalValue") or 0)
+                    except (TypeError, ValueError):
+                        stated = 0.0
+                    if stated > 0:
+                        logger.warning(
+                            "Contract/%s shows %s booked but no revenue line assembled — "
+                            "holding its periods instead of pruning them",
+                            contract.get("ID"),
+                            stated,
+                        )
+                        detail_failed = True
                 merged["_detail_failed"] = detail_failed
                 loaded_contracts.append(merged)
 
@@ -682,6 +781,11 @@ class AquiraSessionClient:
             sum(1 for row in loaded_contracts if row.get("IsProposal") and not row.get("IsContract")),
             len(reps),
         )
+        # "absent" reads are speculative calls that answered this API's spelling of
+        # "nothing here"; they are reported so an operator can see the shape of the
+        # tenant, but only the rest can hold a pull uncertified.
+        critical_calls = [call for call in self.failed_calls if call.get("shape") != "absent"]
+        absent_reads = len(self.failed_calls) - len(critical_calls)
         return {
             "clients": loaded_clients,
             "contacts": contacts,
@@ -689,10 +793,13 @@ class AquiraSessionClient:
             "reps": reps,
             "_integrity": {
                 "failed_reads": len(self.failed_calls),
+                "critical_reads": len(critical_calls),
+                "absent_reads": absent_reads,
                 "failed_calls": list(self.failed_calls),
                 "truncated_sources": list(self.truncated_sources),
                 "detail_failures": sum(1 for row in loaded_contracts if row.get("_detail_failed")),
                 "contract_rows": len(loaded_contracts),
+                "revenue_rows": contracts_with_revenue,
                 "client_rows": len(loaded_clients),
                 "enumeration": {
                     "clients_complete": clients_complete,
@@ -706,8 +813,19 @@ class AquiraSessionClient:
                 "certified": (
                     clients_complete
                     and contracts_complete
-                    and not self.failed_calls
+                    and not critical_calls
                     and not self.truncated_sources
+                    # Forgiving empty answers must not become forgiving a dead
+                    # analysis endpoint: a full pull that saw contracts but found not
+                    # one revenue line anywhere has the exact shape of an outage, and
+                    # pruning from it would clear HubSpot's periods wholesale. A
+                    # targeted run is exempt — it may legitimately hold a single
+                    # line-less contract, and its pruning is scoped by the caller.
+                    and (
+                        bool(aquira_id)
+                        or not loaded_contracts
+                        or contracts_with_revenue > 0
+                    )
                 ),
             },
         }

@@ -300,3 +300,69 @@ def test_spot_line_prefers_total_amount_over_booked():
     )
     assert lines[0]["amount"] == 800
     assert lines[0]["booked_amount"] == 1000
+
+
+def test_spot_lines_reads_the_analysis_items_envelope():
+    # /Contract/GetSpotLineDetailAnalysis answers {"Data": {"Items": [...]}} — one
+    # level deeper than the list envelopes everywhere else. Verified live 2026-09-24.
+    from app.aquira.normalize import normalize_spot_lines
+
+    lines = normalize_spot_lines(
+        {
+            "Success": True,
+            "ErrorName": "None",
+            "Data": {
+                "Items": [
+                    {
+                        "StationShortName": "KCBI",
+                        "StartDate": "2026-02-01",
+                        "EndDate": "2026-02-28",
+                        "TotalAmount": 1500,
+                    }
+                ]
+            },
+        }
+    )
+    assert len(lines) == 1
+    assert lines[0]["amount"] == 1500
+    assert lines[0]["start"] == "2026-02-01"
+
+
+def test_spot_lines_prefers_the_contracts_own_summary_rows():
+    # Bag order is load-bearing: a payload carrying both the contract's spotline
+    # summary and an analysis Items array must assemble from the summary.
+    from app.aquira.normalize import normalize_spot_lines
+
+    lines = normalize_spot_lines(
+        {
+            "Entity": {"SpotLines": [{"StationShortName": "K", "StartDate": "2026-01-01", "TotalAmount": 90}]},
+            "Data": {"Items": [{"StationShortName": "K", "StartDate": "2026-03-01", "TotalAmount": 7}]},
+        }
+    )
+    assert [line["amount"] for line in lines] == [90]
+
+
+def test_spot_lines_does_not_invent_lines_from_the_airing_log():
+    # This tenant's Items rows are per-SPOT airings (SpotDate/Duration/Rate — 657 of
+    # them on one contract), a different grain than a line. They carry no
+    # StartDate/EndDate/amount, so they must contribute nothing: turning them into
+    # lines would spread a contract's money across hundreds of zero-amount rows.
+    from app.aquira.normalize import normalize_spot_lines
+
+    lines = normalize_spot_lines(
+        {
+            "Data": {
+                "Items": [
+                    {
+                        "StationShortName": "KCBI-FM",
+                        "SpotDate": "2026-01-06T00:00:00",
+                        "SpotLineID": 460,
+                        "DayPartShortName": "10a-4p",
+                        "Duration": 30,
+                        "Rate": 0.0,
+                    }
+                ]
+            }
+        }
+    )
+    assert lines == []

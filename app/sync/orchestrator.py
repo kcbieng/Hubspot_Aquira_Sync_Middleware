@@ -867,9 +867,17 @@ class SyncOrchestrator:
             integrity = catalog.get("_integrity") or {}
             allow_prune = bool(integrity.get("certified"))
             if "revenue" in self._wanted(entities) and not allow_prune:
+                # Only critical reads may be blamed for the suppression. Reads this
+                # client declares optional and that answered this API's spelling of
+                # "nothing here" are counted separately as tenant shape.
                 detail = {
                     "failed_reads": integrity.get("failed_reads", 0),
-                    "failed_calls": (integrity.get("failed_calls") or [])[:8],
+                    "critical_reads": integrity.get("critical_reads", integrity.get("failed_reads", 0)),
+                    "absent_reads": integrity.get("absent_reads", 0),
+                    "failed_calls": [
+                        call for call in (integrity.get("failed_calls") or [])
+                        if call.get("shape") != "absent"
+                    ][:8],
                     "truncated_sources": integrity.get("truncated_sources") or [],
                     "detail_failures": integrity.get("detail_failures", 0),
                 }
@@ -879,16 +887,26 @@ class SyncOrchestrator:
                         f"{len(detail['truncated_sources'])} source(s) hit the Aquira row cap "
                         f"({', '.join(detail['truncated_sources'][:4])}) — records beyond it are invisible"
                     )
-                if detail["failed_reads"]:
-                    causes.append(f"{detail['failed_reads']} failed read(s)")
+                if detail["critical_reads"]:
+                    causes.append(f"{detail['critical_reads']} failed read(s)")
                 if detail["detail_failures"]:
-                    causes.append(f"{detail['detail_failures']} contract detail load(s) failed")
+                    causes.append(
+                        f"{detail['detail_failures']} contract(s) whose revenue detail "
+                        "could not be read"
+                    )
+                if not causes and integrity.get("contract_rows", 0) and not integrity.get("revenue_rows", 0):
+                    causes.append("not one contract in the pull carried a revenue line")
                 message = (
                     "Revenue pruning suppressed: the Aquira pull is not certified complete "
                     f"({'; '.join(causes) or 'reason unknown'}); "
                     f"{integrity.get('contract_rows', 0)} contract(s) were visible to this run. "
                     "Existing revenue_period records were left untouched."
                 )
+                if detail["absent_reads"]:
+                    message += (
+                        f" {detail['absent_reads']} read(s) answered 'no rows' on a fallback path "
+                        "and were not counted against certification."
+                    )
                 # A notice, not a warning: a suppressed prune is a safe outcome and
                 # must not flip an otherwise clean run to status="error".
                 notices.append(message)

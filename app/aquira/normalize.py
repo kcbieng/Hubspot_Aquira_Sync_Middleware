@@ -100,6 +100,14 @@ def list_from_envelope(payload: Any) -> list[Any]:
     for key in ("Data", "Entities"):
         if isinstance(root.get(key), list):
             return root[key]
+    # The analysis endpoints wrap their rows one level deeper: {"Data": {"Items": []}}
+    # (verified live 2026-09-24 against GetContractDetailAnalysis and
+    # GetSpotLineDetailAnalysis). Read that shape here too, or every caller that
+    # counts rows — including the row-cap sentinel — sees an empty result.
+    data = as_record(root.get("Data"))
+    for key in ("Items", "Results"):
+        if isinstance(data.get(key), list):
+            return data[key]
     entity = root.get("Entity")
     if isinstance(entity, list):
         return entity
@@ -480,6 +488,9 @@ def normalize_spot_lines(payload: Any) -> list[dict[str, Any]]:
         entity.get("SpotLine"),
         entity.get("SpotLinesSummarized"),
         as_record(entity.get("Summary")).get("SpotLines"),
+        # Last, so a contract that carries its own summary rows keeps using them: this
+        # is the /Contract/GetSpotLineDetailAnalysis shape ({"Data": {"Items": []}}).
+        as_record(root.get("Data")).get("Items"),
     ]
     rows: list[Any] = []
     for bag in bags:

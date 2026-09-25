@@ -342,6 +342,244 @@ def test_completed_sweeps_certify_the_pull_and_partial_sweeps_do_not():
 
 
 # ---------------------------------------------------------------------------
+# Certification: "nothing here" is an answer, not a failed read
+# ---------------------------------------------------------------------------
+def _revenue_tenant_client(monthed_ids, *, analysis_fails=None, contacts_found=False, stated_values=None):
+    """A client speaking this tenant's per-record read shapes, measured live 2026-09-24.
+
+    /Contract/GetContractDetailAnalysis answers Success:true with an EMPTY Data.Items
+    for a contract that has no booked revenue, so an empty contract is not an error.
+    /Client/LookupContacts answers a client with no contacts as Success:false +
+    ErrorName:"NotFound" (Error -12) — the envelope that used to break the sweep.
+    Only /Contract/LoadSpotline answered NotFound for every contract, including ones
+    holding 657 spots, because its spec body needs a SpotlineID; `seen` proves it is
+    no longer called.
+    """
+    from app.aquira.client import AquiraApiError, AquiraSessionClient
+
+    client = AquiraSessionClient(base_url="http://aquira.invalid", username="u", password="p")
+    client.logged_in = True
+    seen: list[str] = []
+
+    def fake(method, path, **kwargs):
+        seen.append(path)
+        if path.startswith("/Client/Load/"):
+            return {"Success": True, "ErrorName": "None", "Entity": {"ID": 21, "Name": "Acme"}}
+        if path == "/Client/LookupContacts":
+            if contacts_found:
+                return {"Success": True, "ErrorName": "None", "Data": [{"ID": 5, "Name": "Jane"}]}
+            raise AquiraApiError("NotFound", error=-12, error_name="NotFound", status_code=200)
+        if path.startswith("/Contract/Load/"):
+            cid = int(path.rsplit("/", 1)[-1])
+            return {"Success": True, "ErrorName": "None", "Entity": {
+                "ID": cid, "ContractCD": f"C{cid}", "Status": 1, "AccountID": 21,
+                "StartDate": "2026-01-01", "EndDate": "2026-03-01"}}
+        if path == "/Contract/GetContractDetailAnalysis":
+            if analysis_fails:
+                raise AquiraApiError(
+                    f"Aquira POST {path} failed (HTTP {analysis_fails})", status_code=analysis_fails
+                )
+            cid = (kwargs.get("json") or {}).get("ID")
+            items = (
+                [{"StationShortName": "KFM", "Year": 2026, "Month": 1, "NetAmount": 1000.0}]
+                if cid in monthed_ids
+                else []
+            )
+            return {"Success": True, "ErrorName": "None", "Data": {"Items": items}}
+        if path == "/Contract/GetSpotLineDetailAnalysis":
+            return {"Success": True, "ErrorName": "None", "Data": {"Items": []}}
+        if path == "/User/Lookup":
+            return {"Success": True, "ErrorName": "None", "Data": []}
+        raise AssertionError(f"unexpected read {method} {path}")
+
+    client.request = fake
+    client.enumerate_clients = lambda: ([{"ID": 21, "Name": "Acme"}], True)
+    client.enumerate_contracts = lambda: (
+        [
+            {"ID": cid, "ContractCD": f"C{cid}", "AccountID": 21, "TotalValue": (stated_values or {}).get(cid, 0)}
+            for cid in (1, 2)
+        ],
+        True,
+    )
+    return client, seen
+
+
+def test_a_contract_with_no_revenue_does_not_uncertify_the_pull():
+    # 84 of this tenant's 248 contracts have no monthly revenue. Each one used to end
+    # the read chain at /Contract/LoadSpotline, whose NotFound answer counted as pull
+    # damage — so pruning could never be earned, on any run, at any cost.
+    client, seen = _revenue_tenant_client({1})
+    catalog = client.load_catalog()
+    integrity = catalog["_integrity"]
+    assert "/Contract/LoadSpotline" not in seen
+    assert integrity["contract_rows"] == 2
+    assert integrity["revenue_rows"] == 1
+    assert integrity["certified"] is True
+    assert integrity["critical_reads"] == 0
+
+
+def test_a_client_with_no_contacts_is_reported_but_not_blamed():
+    # The lookup answers this API's "no rows" envelope; it is tenant shape, so it is
+    # counted as absent and cannot hold certification.
+    client, _ = _revenue_tenant_client({1, 2})
+    integrity = client.load_catalog()["_integrity"]
+    assert integrity["absent_reads"] == 1
+    assert integrity["failed_reads"] == 1
+    assert integrity["critical_reads"] == 0
+    assert integrity["certified"] is True
+    assert integrity["failed_calls"][0]["shape"] == "absent"
+    assert integrity["failed_calls"][0]["error_name"] == "NotFound"
+
+
+def test_a_5xx_on_an_optional_read_still_uncertifies():
+    # Forgiving empty answers must not forgive an outage: the same endpoint failing
+    # server-side is critical whatever the caller declared optional.
+    client, _ = _revenue_tenant_client({1}, analysis_fails=500)
+    integrity = client.load_catalog()["_integrity"]
+    assert integrity["critical_reads"] > 0
+    assert integrity["certified"] is False
+    critical = [call for call in integrity["failed_calls"] if call["shape"] == "critical"]
+    assert critical and all(call["http"] == 500 for call in critical)
+
+
+def test_a_pull_where_no_contract_has_revenue_is_never_certified():
+    # What a dead analysis endpoint looks like, and the shape must stay uncertified
+    # even though every read answered politely: pruning from it would clear every
+    # revenue_period record in HubSpot.
+    client, _ = _revenue_tenant_client(set(), contacts_found=True)
+    integrity = client.load_catalog()["_integrity"]
+    assert integrity["contract_rows"] == 2
+    assert integrity["revenue_rows"] == 0
+    assert integrity["critical_reads"] == 0
+    assert integrity["certified"] is False
+
+
+def test_the_all_empty_backstop_does_not_uncertify_a_targeted_run():
+    # A targeted sync of one genuinely line-less contract is a legitimate shape: the
+    # backstop guards a tenant-wide outage, and a targeted run prunes nothing outside
+    # its own scope anyway.
+    client, _ = _revenue_tenant_client(set(), contacts_found=True)
+    client.resolve_clients = lambda query: [{"ID": 21, "Name": "Acme"}]
+    client.search_contracts = lambda query: [{"ID": 1, "ContractCD": "C1", "AccountID": 21}]
+    integrity = client.load_catalog(aquira_id="1")["_integrity"]
+    assert integrity["contract_rows"] == 1
+    assert integrity["revenue_rows"] == 0
+    assert integrity["certified"] is True
+
+
+def test_the_row_cap_sentinel_ignores_per_record_detail_reads():
+    # Reading the Items envelope means the row-cap sentinel can finally COUNT these
+    # answers — and one contract's spot log legitimately holds 657 rows (measured
+    # live). Applying the 100-row enumeration cap to a per-record detail read would
+    # report a complete answer as truncation and withhold certification again.
+    client, _ = _revenue_tenant_client(set())
+    client.load_catalog()
+    assert client.truncated_sources == []
+
+    airings = [
+        {"StationShortName": "KFM", "SpotDate": "2026-01-06T00:00:00", "SpotLineID": 460, "Duration": 30, "Rate": 12.0}
+        for _ in range(657)
+    ]
+    spot_client, _ = _revenue_tenant_client(set())
+    original = spot_client.request
+
+    def fake(method, path, **kwargs):
+        if path == "/Contract/GetSpotLineDetailAnalysis":
+            return {"Success": True, "ErrorName": "None", "Data": {"Items": airings}}
+        return original(method, path, **kwargs)
+
+    spot_client.request = fake
+    spot_client.load_catalog()
+    assert spot_client.truncated_sources == []
+
+
+def test_a_657_row_spot_log_still_certifies_end_to_end():
+    # The same tenant fact at the level the operator sees: a big spot log must not
+    # block pruning, and must not invent 657 revenue lines out of airing-grain rows.
+    airings = [
+        {"StationShortName": "KFM", "SpotDate": "2026-01-06T00:00:00", "SpotLineID": 460, "Duration": 30, "Rate": 0.0}
+        for _ in range(657)
+    ]
+    client, _ = _revenue_tenant_client({1})
+    original = client.request
+
+    def fake(method, path, **kwargs):
+        if path == "/Contract/GetSpotLineDetailAnalysis":
+            return {"Success": True, "ErrorName": "None", "Data": {"Items": airings}}
+        return original(method, path, **kwargs)
+
+    client.request = fake
+    catalog = client.load_catalog()
+    integrity = catalog["_integrity"]
+    assert integrity["truncated_sources"] == []
+    assert integrity["certified"] is True
+    for row in catalog["contracts"]:
+        assert len(row.get("lines") or []) < 657
+
+
+def test_a_contract_stating_money_with_no_lines_is_held_from_pruning():
+    # The hold that replaces the deleted guess: if the sweep row says money and no
+    # revenue line came back, the record is not empty — our read is. Pruning it would
+    # delete the deal's periods, so it is kept out of prune scope instead.
+    client, _ = _revenue_tenant_client(set(), stated_values={1: 12000.0})
+    catalog = client.load_catalog()
+    by_id = {int(row["ID"]): row for row in catalog["contracts"]}
+    assert by_id[1].get("_detail_failed") is True
+    assert by_id[2].get("_detail_failed") is False
+    assert catalog["_integrity"]["detail_failures"] == 1
+
+    # And the marker is honored where it matters: the held contract's stale periods
+    # are out of scope, the other one's are not.
+    repo = MagicMock()
+    repo.add_run.return_value = MagicMock(id=12)
+    existing = empty_existing()
+    existing["revenue"] = [
+        {"id": "r1", "properties": {"aquira_id": "1:2025-12:0", "amount": "6000"}},
+        {"id": "r2", "properties": {"aquira_id": "2:2025-12:0", "amount": "500"}},
+    ]
+    existing["deals"] = [
+        {"id": "d1", "properties": {"aquira_id": "1"}},
+        {"id": "d2", "properties": {"aquira_id": "2"}},
+    ]
+    catalog["_integrity"] = {"certified": True, "contract_rows": 2, "revenue_rows": 1}
+    items = SyncOrchestrator().build_plan(catalog, existing, ["deals"], {}, allow_prune=True)
+    pruned = {str(item.get("aquiraId")) for item in items if item.get("action") == "delete-stale"}
+    assert pruned == {"2:2025-12:0"}
+
+
+def test_suppression_notice_blames_critical_reads_and_separates_empty_ones():
+    repo = MagicMock()
+    repo.add_run.return_value = MagicMock(id=11)
+    catalog = empty_catalog()
+    catalog["_integrity"] = {
+        "certified": False,
+        "failed_reads": 85,
+        "critical_reads": 1,
+        "absent_reads": 84,
+        "failed_calls": [{"method": "POST", "path": "/Contract/Get", "shape": "critical"}]
+        + [{"method": "POST", "path": "/Client/LookupContacts", "shape": "absent"}] * 84,
+        "truncated_sources": [],
+        "detail_failures": 0,
+        "contract_rows": 248,
+        "revenue_rows": 164,
+    }
+    result = SyncOrchestrator().run(
+        SyncContext(trigger="manual", whatif=True),
+        repo=repo,
+        catalog=catalog,
+        existing=empty_existing(),
+    )
+    text = " ".join(result["notices"])
+    assert "1 failed read(s)" in text
+    assert "84 read(s) answered 'no rows'" in text
+    # The log payload must lead with the call that actually matters, not with 84
+    # copies of a harmless empty answer.
+    warn_call = [c for c in repo.add_event.call_args_list if c.args[1] == "WARN"][-1]
+    detail = warn_call.args[3]
+    assert [call["path"] for call in detail["failed_calls"]] == ["/Contract/Get"]
+
+
+# ---------------------------------------------------------------------------
 # Field ownership: human pipeline moves survive; source transitions propagate
 # ---------------------------------------------------------------------------
 def _booked_contract():

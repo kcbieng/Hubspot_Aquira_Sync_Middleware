@@ -8,6 +8,7 @@ Run this locally where .env holds the real credentials:
     python scripts/conformance_probe.py sharding
     python scripts/conformance_probe.py ids
     python scripts/conformance_probe.py tail
+    python scripts/conformance_probe.py reads
     python scripts/conformance_probe.py statuses
     python scripts/conformance_probe.py all
 
@@ -1500,6 +1501,263 @@ def probe_sweep_tail() -> None:
 
 
 # --------------------------------------------------------------------------
+# READ-PATH CENSUS: how many failed_reads a full run is obliged to record, and why
+# --------------------------------------------------------------------------
+def probe_read_census() -> None:
+    """Why this section exists. A run reported:
+
+        Revenue pruning suppressed: the Aquira pull is not certified complete
+        (84 failed read(s)); 248 contract(s) were visible to this run.
+
+    with NO "source(s) hit the Aquira row cap" cause and NO "contract detail load(s)
+    failed" cause, which means the SearchByID sweeps DID prove their tail and every
+    /Contract/Load answered. The only remaining gate is
+    app/aquira/client.py:`certified = ... and not self.failed_calls`, and try_request
+    records a failed call for EVERY speculative endpoint attempt — the deliberate
+    multi-guess fallbacks in load_spot_lines/load_charge_lines, and, critically, a
+    "no rows" answer, which this API delivers as Success:false + ErrorName:"NotFound"
+    rather than an empty list (proven for SearchByID in the tail section).
+
+    If that convention holds for the revenue-detail endpoints too, then any tenant
+    with line-less contracts can NEVER certify: pruning stays suppressed forever, no
+    record is lost, and nothing in the log looks like an error. The failed_reads count
+    is then a measurement of the tenant's empty contracts, not of pull quality — which
+    is exactly the wrong thing to gate a destructive prune on.
+
+    So measure it rather than assume it: call the endpoints a full run calls, with the
+    bodies it sends, in the order load_contract tries them, over a stratified sample
+    (contracts whose sweep row carried an amount vs. those that did not — the tail
+    section counted 164 with and 84 without, and 84 is also the reported failed_reads,
+    which is the coincidence worth killing). Then replay the app's own fallback logic
+    to PREDICT failed_reads for the whole tenant.
+
+    READ-ONLY: SearchByID, /Contract/Load/<id>, /Contract/GetContractDetailAnalysis,
+    /Contract/GetSpotLineDetailAnalysis, /Contract/LoadSpotline, /User/Lookup.
+    """
+    s = _settings()
+    base = (s.aquira_base_url or "").rstrip("/")
+    if not (base and s.aquira_username and s.aquira_password):
+        print("READS: aquira credentials required")
+        return
+    client = httpx.Client(base_url=base, timeout=TIMEOUT)
+    try:
+        login = client.post(
+            "/Session/Post", json={"Username": s.aquira_username, "Password": s.aquira_password}
+        ).json()
+    except Exception:
+        login = {}
+    if not login.get("Success", True):
+        print("  [FAIL] login refused")
+        client.close()
+        return
+    print("\n=== READ-PATH CENSUS (reads only) ===")
+
+    from app.aquira.normalize import (
+        normalize_charge_lines,
+        normalize_contract,
+        normalize_revenue_months,
+        normalize_spot_lines,
+    )
+
+    BATCH = 50
+    # Every failed attempt is classified, because the fix depends entirely on WHICH
+    # kind of failure the 84 are: "no rows, delivered as an error" (benign — gating a
+    # destructive prune on it means pruning can never be earned) versus a real 5xx or
+    # transport failure (those SHOULD uncertify the pull).
+    shapes = {"no-rows": 0, "http-4xx": 0, "http-5xx": 0, "transport": 0}
+
+    def call(path: str, body: dict | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {"http": None, "rows": 0, "payload": None, "failed": False}
+        try:
+            r = client.request("POST", path, json=body) if body is not None else client.request("POST", path)
+        except Exception as exc:
+            out.update(error=f"{type(exc).__name__}: {str(exc)[:120]}", failed=True)
+            shapes["transport"] += 1
+            return out
+        out["http"] = r.status_code
+        try:
+            p = r.json()
+        except Exception:
+            out.update(error="non-JSON", failed=True)
+            shapes["http-5xx" if r.status_code >= 500 else "http-4xx"] += 1
+            return out
+        if not isinstance(p, dict):
+            out.update(error=f"json {type(p).__name__}", failed=True)
+            shapes["transport"] += 1
+            return out
+        out["payload"] = p
+        out["Success"] = p.get("Success")
+        data = p.get("Data")
+        out["rows"] = len(data) if isinstance(data, list) else 0
+        # app/aquira/client.py:request raises on exactly this condition, so this is the
+        # rule that decides whether the app would have recorded a failed_call. ErrorName
+        # is reported but NOT folded in: on successful calls it is the string "None".
+        failed = r.status_code >= 400 or p.get("Success") is False
+        out["failed"] = failed
+        if failed:
+            if r.status_code >= 500:
+                shape = "http-5xx"
+            elif r.status_code >= 400:
+                shape = "http-4xx"
+            else:
+                shape = "no-rows"  # HTTP 200 + Success:false == this API's "empty"
+            out["shape"] = shape
+            shapes[shape] += 1
+            for key in ("ErrorName", "ErrorText", "Error"):
+                value = p.get(key)
+                if value in (None, "", 0, "0", False):
+                    continue
+                if isinstance(value, str) and value.strip().lower() in NO_ERROR_TOKENS:
+                    continue
+                out[key] = str(value)[:120]
+        return out
+
+    # ---- map the contract id space and stratify by whether the sweep row has money --
+    live: dict[int, dict[str, Any]] = {}
+    empties = 0
+    start = 1
+    while start <= 1200:
+        res = call("/Contract/SearchByID", {"SearchIDs": list(range(start, start + BATCH))})
+        for row in (res.get("payload") or {}).get("Data") or []:
+            if isinstance(row, dict):
+                ident = row.get("ID") or row.get("Id")
+                if str(ident).isdigit():
+                    live[int(ident)] = row
+        empties = 0 if (res.get("rows") and not res.get("failed")) else empties + 1
+        if live and empties >= 3:
+            break
+        start += BATCH
+    if not live:
+        print("  [FAIL] no contracts found — nothing to census.")
+        client.close()
+        return
+    rich = [i for i in sorted(live) if (normalize_contract(dict(live[i])) or {}).get("TotalValue")]
+    rich_set = set(rich)
+    poor = [i for i in sorted(live) if i not in rich_set]
+    print(f"  [INFO] contracts enumerated: {len(live)} (high id {max(live)})")
+    print(f"  [INFO] strata: sweep row HAS an amount = {len(rich)}, NO amount = {len(poor)}")
+    print("  [INFO] the tail section counted 164 with-total / 84 without, and the run reported "
+          "84 failed_reads. If those 84 empty-amount contracts are the same records that produce "
+          "the failed reads, the number is tenant shape, not pull damage.")
+
+    sample = poor[:10] + rich[:6]
+    print(f"  [INFO] census sample: {len(sample)} contracts "
+          f"({len(poor[:10])} no-amount, {len(rich[:6])} with-amount) x the endpoints a run calls")
+
+    per_contract: list[dict[str, Any]] = []
+    error_names: dict[str, dict[str, int]] = {}
+    # Sample-scoped on purpose: the global `shapes` counter also sees the id map's
+    # dead-tail batches, which are expected no-rows answers and would swamp it.
+    sample_shapes = {"no-rows": 0, "http-4xx": 0, "http-5xx": 0, "transport": 0}
+
+    def attempt(label: str, path: str, body: dict) -> tuple[dict[str, Any], int]:
+        """One call, tallied into error_names/sample_shapes the way try_request
+        would tally it into failed_calls."""
+        res = call(path, body)
+        if res.get("failed"):
+            name = res.get("ErrorName") or res.get("error") or f"http {res.get('http')}"
+            bucket = error_names.setdefault(label, {})
+            bucket[str(name)[:60]] = bucket.get(str(name)[:60], 0) + 1
+            shape = res.get("shape") or ("transport" if res.get("error") else "unknown")
+            sample_shapes[shape] = sample_shapes.get(shape, 0) + 1
+        return res, 1 if res.get("failed") else 0
+
+    for ident in sample:
+        # Exact replay of app/aquira/client.py:load_contract's probe order.
+        failed_reads = 0
+        months_res, fail = attempt("detail-analysis", "/Contract/GetContractDetailAnalysis",
+                                   {"ID": ident, "id": ident, "RevenueDateType": 0, "name": "detail"})
+        failed_reads += fail
+        months = normalize_revenue_months(months_res.get("payload")) if months_res.get("payload") else []
+        lines: list[Any] = []
+        if not months:
+            spot_res, fail = attempt("spot-lines", "/Contract/GetSpotLineDetailAnalysis",
+                                     {"id": ident, "ID": ident, "name": "spot-lines"})
+            failed_reads += fail
+            lines = normalize_spot_lines(spot_res.get("payload")) if spot_res.get("payload") else []
+            if not lines:
+                ls_res, fail = attempt("loadspotline", "/Contract/LoadSpotline",
+                                       {"ContractID": ident, "name": "spotline"})
+                failed_reads += fail
+                lines = normalize_spot_lines(ls_res.get("payload")) if ls_res.get("payload") else []
+            charge_res, fail = attempt("detail-analysis(charge)", "/Contract/GetContractDetailAnalysis",
+                                       {"ID": ident, "id": ident, "RevenueDateType": 0, "name": "detail"})
+            failed_reads += fail
+            charges = normalize_charge_lines(charge_res.get("payload")) if charge_res.get("payload") else []
+            lines = [*lines, *charges]
+        load_res = call(f"/Contract/Load/{ident}", {"name": "load"})
+        load_ok = not load_res.get("failed")
+        per_contract.append({
+            "id": ident, "amount": ident in rich_set, "failed_reads": failed_reads,
+            "months": len(months), "lines": len(lines), "load_ok": load_ok,
+        })
+        stratum = "has-amount" if ident in rich_set else "no-amount "
+        print(f"           id {ident:>4} {stratum}: failed_reads={failed_reads} "
+              f"months={len(months)} lines={len(lines)} "
+              f"Contract/Load={'ok' if load_ok else 'FAILED'}")
+
+    print("\n  --- what failed, by endpoint (this is what failed_calls would contain) ---")
+    for label, bucket in sorted(error_names.items()):
+        print(f"  [INFO] {label}: {bucket}")
+    if not error_names:
+        print("  [OK ] no sampled optional read failed — the 84 comes from somewhere else; "
+              "paste the /ui/logs event payload (it carries the first 8 failed_calls) instead.")
+
+    poor_cost = sum(c["failed_reads"] for c in per_contract if not c["amount"])
+    poor_n = sum(1 for c in per_contract if not c["amount"])
+    rich_cost = sum(c["failed_reads"] for c in per_contract if c["amount"])
+    rich_n = sum(1 for c in per_contract if c["amount"])
+    rate_poor = poor_cost / poor_n if poor_n else 0.0
+    rate_rich = rich_cost / rich_n if rich_n else 0.0
+    predicted = round(rate_poor * len(poor) + rate_rich * len(rich))
+    print(f"  [INFO] cost per contract: no-amount={rate_poor:.2f} failed read(s), "
+          f"with-amount={rate_rich:.2f}")
+    print(f"  [INFO] PREDICTED failed_reads for all {len(live)} contracts = {predicted} "
+          f"(the last run reported 84 — compare, and check the strata counts above against "
+          f"164/84 from the tail section)")
+    empty_records = sum(1 for c in per_contract if not c["months"] and not c["lines"])
+    print(f"  [INFO] sampled contracts with NO revenue data at all: {empty_records}/{len(per_contract)} "
+          f"-> extrapolates to ~{round(len(live) * empty_records / max(1, len(per_contract)))} of {len(live)}")
+
+    # /User/Lookup overhead: load_sales_reps tries two bodies; a 404 on the first is
+    # harmless but is also counted as a failed read.
+    for body in ({"salesReps": True, "CurrentOnly": True, "SearchTerm": ""}, {"salesReps": True}):
+        res = call("/User/Lookup", body)
+        print(f"  [INFO] /User/Lookup {json.dumps(body)} -> http={res.get('http')} "
+              f"rows={res.get('rows')} failed={res.get('failed')} "
+              f"ErrorName={res.get('ErrorName')!r}")
+
+    total_failures = sum(sample_shapes.values())
+    print(f"  [INFO] failure shapes over the sampled revenue reads: {sample_shapes} "
+          f"(all calls incl. the id map: {shapes})")
+    if not total_failures:
+        print("  [VERDICT] no optional revenue read failed on any sampled contract, so the run's 84 "
+              "failed_reads are NOT coming from load_contract's probe path. The /ui/logs event "
+              "payload is the only thing that can name them — paste it.")
+    elif sample_shapes["no-rows"] == total_failures:
+        print(f"  [VERDICT] all {total_failures} sampled failures were HTTP 200 + Success:false — this "
+              "API's spelling of 'no rows', the same convention that made the SearchByID tail "
+              "unprovable. `certified = ... and not self.failed_calls` therefore counts an EMPTY "
+              "contract as a read failure, so this tenant can never earn pruning while losing no "
+              "data at all. The fix belongs in _integrity: separate no-rows/optional failures from "
+              "completeness-critical ones. Do not retry, and do not blame Aquira.")
+    else:
+        print(f"  [VERDICT] the sampled failures MIX shapes: {sample_shapes}. http-5xx/transport ones "
+              "genuinely SHOULD uncertify the pull; no-rows ones should not. Split them in "
+              "_integrity by shape, not by endpoint, and keep this section's per-endpoint tally as "
+              "the regression check.")
+    print("  [NEXT] Paste this section AND the <pre> payload from /ui/logs (the WARN "
+          "'Revenue pruning suppressed' event stores the first 8 failed_calls, method + path + "
+          "error each). Whether the fix is 'stop counting no-rows' or 'repair endpoint X' depends "
+          "on those 8.")
+    try:
+        client.delete("/Session/Delete")
+    except Exception:
+        pass
+    client.close()
+
+
+# --------------------------------------------------------------------------
 # STATUS DOMAIN: which IncludeStatuses codes exist and what they mean
 # --------------------------------------------------------------------------
 def probe_statuses() -> None:
@@ -1701,6 +1959,8 @@ def main() -> int:
         probe_id_sweep()
     if which in {"all", "tail"}:
         probe_sweep_tail()
+    if which in {"all", "reads"}:
+        probe_read_census()
     if which in {"all", "statuses"}:
         probe_statuses()
     print("\nDone. Paste this whole output back. It contains no credentials.")
