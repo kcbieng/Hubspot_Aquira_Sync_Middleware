@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 import time
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.settings import get_settings
@@ -53,6 +54,58 @@ def queue_size() -> int:
 
 def is_busy() -> bool:
     return queue_size() > 0
+
+
+# A live full run of the deployed tenant took 30 minutes, so a row still 'running'
+# well past that belongs to a process that no longer exists.
+RUN_STALE_AFTER_MINUTES = 90
+
+
+def release_orphaned_jobs(*, stale_only: bool = False) -> int:
+    """Clear 'running' queue rows that no live worker owns, and fail their run records.
+
+    Two separate situations, both of which otherwise silence automatic syncing forever:
+
+    * the loop is starting, so anything marked 'running' was left by a previous
+      incarnation of this process (``stale_only=False``) — it died mid-run, or was
+      restarted;
+    * a row has been 'running' far longer than a real run takes (``stale_only=True``),
+      for the case where the loop is alive but its worker thread is not.
+
+    Only ever call this from the process that executes jobs: from the web container a
+    'running' row is a sync the worker is genuinely doing, and releasing it would
+    cancel live work and write a false error over it.
+    """
+    from app.db.repo import Repo
+
+    repo = Repo()
+    try:
+        jobs = repo.running_jobs()
+        if stale_only:
+            # started_at is written with datetime.utcnow(), so compare naive-to-naive:
+            # .timestamp() would reinterpret it as machine-local time and reintroduce
+            # the very offset bug this function exists to work around.
+            cutoff = datetime.utcnow() - timedelta(minutes=RUN_STALE_AFTER_MINUTES)
+            jobs = [job for job in jobs if job.started_at is None or job.started_at.replace(tzinfo=None) < cutoff]
+        if not jobs:
+            return 0
+        count = repo.release_orphaned_jobs(
+            jobs,
+            "no live worker held this job — released so the queue and the schedule can move",
+        )
+        if count:
+            repo.add_event(
+                "sync",
+                "WARN",
+                f"released {count} orphaned sync job(s) left 'running' without a worker",
+                {"jobs": [int(job.id) for job in jobs], "runs": [job.run_id for job in jobs]},
+            )
+        return count
+    except Exception:
+        logger.exception("could not release orphaned sync jobs")
+        return 0
+    finally:
+        repo.close()
 
 
 def enqueue_sync(context: SyncContext) -> dict[str, Any]:
@@ -179,6 +232,10 @@ def _execute_row(kind: str, payload: dict[str, Any], run_id: int | None) -> None
 def run_forever(*, once: bool = False, idle_sleep: float = 0.4) -> None:
     from app.db.repo import Repo
 
+    if can_execute_jobs():
+        # Nothing of ours is in flight yet, so a 'running' row here was left by the
+        # previous incarnation of this process — usually a restart during a live run.
+        release_orphaned_jobs()
     while not _stop.is_set():
         repo = Repo()
         try:
@@ -213,6 +270,14 @@ def run_forever(*, once: bool = False, idle_sleep: float = 0.4) -> None:
         done = Repo()
         try:
             done.finish_job(job_id, status=status, error=error)
+            if error and run_id is not None:
+                # A job that died before the orchestrator could own its run record
+                # leaves that row 'queued' forever; the UI then shows work pending that
+                # will never arrive.
+                try:
+                    done.fail_run(int(run_id), error[:300])
+                except (TypeError, ValueError):
+                    logger.warning("job %s carried an unusable run_id %r", job_id, run_id)
         finally:
             done.close()
         if once:

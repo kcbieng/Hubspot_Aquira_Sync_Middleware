@@ -398,6 +398,23 @@ class Repo:
     def get_run(self, run_id: int) -> SyncRun | None:
         return self.session.get(SyncRun, run_id)
 
+    def fail_run(self, run_id: int, error: str) -> bool:
+        """Close a run record that no executor ever picked up.
+
+        The orchestrator finalizes its own run, so this only ever meets the rows left
+        behind when a job dies before the run starts — another sync already holding the
+        lock, for instance. Without it the history shows a run 'queued' forever, which
+        reads as pending work that will never arrive.
+        """
+        run = self.session.get(SyncRun, run_id)
+        if run is None or run.status not in {"pending", "queued", "running"}:
+            return False
+        run.status = "error"
+        run.error = error
+        run.finished_at = datetime.utcnow()
+        self.session.commit()
+        return True
+
     def list_run_items(self, run_id: int) -> list[SyncRunItem]:
         return (
             self.session.execute(select(SyncRunItem).where(SyncRunItem.run_id == run_id).order_by(SyncRunItem.id.asc()))
@@ -842,6 +859,41 @@ class Repo:
             ).scalar()
             or 0
         )
+
+    def running_jobs(self) -> list[WorkQueue]:
+        return list(
+            self.session.execute(select(WorkQueue).where(WorkQueue.status == "running").order_by(WorkQueue.id.asc()))
+            .scalars()
+            .all()
+        )
+
+    def release_orphaned_jobs(self, jobs: list[WorkQueue], reason: str) -> int:
+        """Hand back work_queue rows stuck in 'running' with no worker behind them.
+
+        ``claim_job`` only ever selects 'queued', so a row left 'running' by a killed or
+        restarted worker is never picked up again — and 'running' counts toward
+        ``active_job_count()``, which is what makes the scheduled poll skip as
+        "worker is busy". Left alone, one interrupted run silences automatic syncing
+        permanently. The caller decides which rows are orphans: this cannot tell a
+        live sync from a corpse, so only a process that knows no job of its own is in
+        flight should call it.
+        """
+        if not jobs:
+            return 0
+        now = datetime.utcnow()
+        for row in jobs:
+            row.status = "error"
+            row.error = reason
+            row.finished_at = now
+            if row.run_id is None:
+                continue
+            run = self.session.get(SyncRun, row.run_id)
+            if run is not None and run.status in {"pending", "queued", "running"}:
+                run.status = "error"
+                run.error = reason
+                run.finished_at = now
+        self.session.commit()
+        return len(jobs)
 
     def close(self) -> None:
         if self._owns_session:
