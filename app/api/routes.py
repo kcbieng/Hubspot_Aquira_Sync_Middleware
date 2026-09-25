@@ -3,6 +3,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from app.aquira.client import AquiraSessionClient, test_aquira_connection
+from app.cfaccess import provider_logout_url
 from app.db.models import OwnerMap, TeamMap
 from app.db.repo import Repo
 from app.hubspot.client import HubSpotClient
@@ -53,7 +54,23 @@ def login(payload: dict[str, str]) -> JSONResponse:
 
 @router.post("/logout")
 def logout() -> JSONResponse:
-    response = JSONResponse({"ok": True})
+    """Clear the local session.
+
+    Under Cloudflare Access the identity comes from a per-request header, not a cookie,
+    so dropping the cookie changes nothing: the next request is authenticated again
+    before the page has finished reloading. Say so, and hand back where they actually
+    have to sign out — a button that reports success while the user is still signed in
+    is worse than one that admits it can't finish the job.
+    """
+    provider = provider_logout_url()
+    response = JSONResponse(
+        {
+            "ok": True,
+            "signed_out": provider is None,
+            "provider_logout_url": provider,
+            "detail": None if provider is None else "signed in through Cloudflare Access; use provider_logout_url",
+        }
+    )
     clear_session(response)
     return response
 

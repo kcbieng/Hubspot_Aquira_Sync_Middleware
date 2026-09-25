@@ -253,7 +253,15 @@ def _graph_groups(access_token: str) -> set[str]:
     return ids
 
 
-def _role_from_groups(groups: set[str]) -> str | None:
+def role_from_groups(groups: set[str]) -> str | None:
+    """Entra group object-id -> HubQuira role. Shared with app.cfaccess, because
+    Cloudflare Access forwards the same `groups` claim the OIDC token carried.
+
+      member of sso_admin_group -> admin
+      member of sso_sales_group -> sales
+      both unset                -> sales, for whoever the IdP let through
+      otherwise                 -> None (refused)
+    """
     settings = get_settings()
     admin = settings.sso_admin_group.strip()
     sales = settings.sso_sales_group.strip()
@@ -264,3 +272,6 @@ def _role_from_groups(groups: set[str]) -> str | None:
     if sales and sales in groups:
         return "sales"
     return None
+
+
+_role_from_groups = role_from_groups  # kept for the internal call below and any caller

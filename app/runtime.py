@@ -28,6 +28,7 @@ BOOL_KEYS = {
     "bootstrap_hubspot",
     "match_digest_enabled",
     "sso_enabled",
+    "cf_access_enabled",
 }
 
 INT_KEYS = {"sync_interval_minutes", "smtp_port", "dlq_retry_minutes", "dlq_freeze_after"}

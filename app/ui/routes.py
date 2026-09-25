@@ -294,6 +294,9 @@ async def update_settings(request: Request):
             "oidc_client_secret": form.get("oidc_client_secret"),
             "sso_admin_group": form.get("sso_admin_group"),
             "sso_sales_group": form.get("sso_sales_group"),
+            "cf_access_enabled": str(form.get("cf_access_enabled", "false")).lower() in {"1", "true", "on", "yes"},
+            "cf_access_team_domain": form.get("cf_access_team_domain"),
+            "cf_access_aud_tag": form.get("cf_access_aud_tag"),
             "teams_webhook_url": form.get("teams_webhook_url"),
         }
         try:

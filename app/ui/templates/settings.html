@@ -155,6 +155,28 @@
         <label class="form-label" for="sso_admin_group">HQ-Admins group object id</label>
         <input class="form-control" id="sso_admin_group" name="sso_admin_group" value="{{ settings.sso_admin_group }}" autocomplete="off">
       </div>
+      <div class="col-12"><hr><h3 class="h6 mb-3">Perimeter sign-in (Cloudflare Zero Trust)</h3></div>
+      <div class="col-md-3">
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" id="cf_access_enabled" name="cf_access_enabled" {% if settings.cf_access_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="cf_access_enabled">Trust Cloudflare Access</label>
+        </div>
+        <div class="form-text">Verifies the JWT Cloudflare attaches to each request, so Entra can gate this app
+          without a second OIDC setup here. Needs all three fields. Roles still come from the Entra group object
+          ids above — but Access only puts <code>groups</code> in the token if you add it as a custom OIDC claim on
+          the identity provider, and it is <strong>not</strong> added by default. Single sign-on itself can stay off.</div>
+      </div>
+      <div class="col-md-5">
+        <label class="form-label" for="cf_access_team_domain">Team domain</label>
+        <input class="form-control" id="cf_access_team_domain" name="cf_access_team_domain" value="{{ settings.cf_access_team_domain }}" placeholder="yourteam.cloudflareaccess.com" autocomplete="off">
+      </div>
+      <div class="col-md-4">
+        <label class="form-label" for="cf_access_aud_tag">Audience tag</label>
+        <input class="form-control" id="cf_access_aud_tag" name="cf_access_aud_tag" value="{{ settings.cf_access_aud_tag }}" placeholder="Access application &rsaquo; Overview &rsaquo; aud tag" autocomplete="off">
+        <div class="form-text">Scopes acceptance to this one application: a token minted for any other app in your
+          team is refused. Reachable by browser or <code>curl</code> through the tunnel; local admin and local-user
+          login stay available as break-glass.</div>
+      </div>
       <div class="col-12"><hr><h3 class="h6 mb-3">Alerts — Microsoft Teams channel</h3></div>
       <div class="col-md-9">
         <label class="form-label" for="teams_webhook_url">Workflows webhook URL (post to channel)</label>

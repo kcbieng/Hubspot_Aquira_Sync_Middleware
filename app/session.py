@@ -6,6 +6,7 @@ from fastapi.responses import Response
 from starlette.requests import Request
 
 from app.auth import parse_user_session_token
+from app.cfaccess import identity_from_request as cf_identity
 from app.settings import get_settings
 
 COOKIE_NAME = "middleware_session"
@@ -44,8 +45,18 @@ def clear_session(response: Response) -> None:
 
 
 def session_identity(request: Request) -> dict[str, str] | None:
-    """None = anonymous. The env-configured credential is always admin."""
+    """None = anonymous.
+
+    A verified Cloudflare Access token wins when that mode is configured; otherwise the
+    env-configured credential is always admin and named users carry their own cookie.
+    Order matters for the outage case only: Access returning nothing falls through to the
+    cookie, so Cloudflare being down cannot lock the operator out of the tool used to
+    fix it.
+    """
     settings = get_settings()
+    asserted = cf_identity(request)
+    if asserted is not None:
+        return asserted
     token = request.cookies.get(COOKIE_NAME) or ""
     if token and hmac_equal(token, session_token()):
         return {"email": settings.ui_username, "role": "admin", "source": "config"}

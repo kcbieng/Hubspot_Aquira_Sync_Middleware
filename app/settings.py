@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     oidc_client_secret: str = ""
     sso_admin_group: str = ""  # Entra object id of HQ-Admins; membership => admin
     sso_sales_group: str = ""  # Entra object id of HQ-Sales; membership => sales (else denied)
+    # Cloudflare Zero Trust: the tunnel finishes Entra and asserts the winner in a JWT
+    # this origin verifies against Cloudflare's own keys. Group->role reuses the
+    # sso_admin_group / sso_sales_group ids above, because Access forwards the same
+    # Entra `groups` claim. All three must be set for this to take effect.
+    cf_access_enabled: bool = False
+    cf_access_team_domain: str = ""  # e.g. "firstdallas.cloudflareaccess.com"
+    cf_access_aud_tag: str = ""  # the Access application's Audience Tag UUID
+    cf_access_jwt_header: str = "Cf-Access-Jwt-Assertion"  # rename only if the app did
     teams_webhook_url: str = ""  # M365 Workflows "post to channel when webhook request is received"
     hubspot_deal_pipeline: str = ""  # custom deal pipeline id; empty = "default"
     hubspot_stage_proposal: str = ""  # where open proposals land
